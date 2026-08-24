@@ -100,8 +100,9 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   handoffStatus: () => ipcRenderer.invoke('dsh:handoff-status'),
   continueConversation: () => ipcRenderer.invoke('dsh:continue-conversation'),
   submitRegion: (region) => ipcRenderer.invoke('dsh:capture-region', region),
-  captureWarmup: () => ipcRenderer.invoke('dsh:capture-warmup'),
   cancelCapture: () => ipcRenderer.invoke('dsh:capture-cancel'),
+  onCaptureBackdrop: (cb) => subscribe('dsh:capture-backdrop', cb),
+  onCaptureReset: (cb) => subscribe('dsh:capture-reset', cb),
   onScreenshotReady: (cb) => subscribe('dsh:screenshot-ready', cb),
   // 截图预识别结果（截图时主进程已开始识别，纯文本模型发送被拒时补救可直用，零等待）
   onScreenshotDesc: (cb) => subscribe('dsh:screenshot-desc', cb),

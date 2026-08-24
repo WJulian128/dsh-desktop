@@ -6,7 +6,13 @@
   <style>
     * { margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; overflow: hidden; cursor: crosshair; }
-    body { background: transparent; }
+    body { background: #0d1117; }
+    #stage {
+      position: fixed; inset: 0;
+      background-color: #0d1117;
+      background-repeat: no-repeat;
+      background-size: 100% 100%;
+    }
     #mask { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.25); }
     #rect {
       position: fixed; border: 2px solid #2f81f7; background: rgba(47, 129, 247, 0.08);
@@ -24,21 +30,37 @@
   </style>
 </head>
 <body>
+  <div id="stage"></div>
   <div id="mask"></div>
   <div id="rect"></div>
   <div id="size"></div>
-  <div id="hint">拖动框选截图区域，松开完成 · Esc 取消</div>
+  <div id="hint">正在捕获屏幕…</div>
   <script>
     'use strict';
     const d = window.dshDesktop;
+    const stage = document.getElementById('stage');
     const rect = document.getElementById('rect');
     const sizeEl = document.getElementById('size');
+    const hintEl = document.getElementById('hint');
     let start = null;
+
+    function setBackdrop(dataUrl) {
+      stage.style.backgroundImage = 'url("' + dataUrl + '")';
+      hintEl.textContent = '拖动框选截图区域，松开完成 · Esc 取消';
+    }
+    function resetBackdrop() {
+      stage.style.backgroundImage = 'none';
+      hintEl.textContent = '正在捕获屏幕…';
+    }
+
+    // 冻结画面到达（主进程捕获完成后推送）；每次打开窗口先重置，避免显示上一次的旧画面
+    if (d) {
+      if (typeof d.onCaptureBackdrop === 'function') d.onCaptureBackdrop((ev) => { if (ev && ev.dataUrl) setBackdrop(ev.dataUrl); });
+      if (typeof d.onCaptureReset === 'function') d.onCaptureReset(() => resetBackdrop());
+    }
 
     document.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
-      // 预热：拖选期间主进程并行捕获全屏，松手提交时零等待
-      if (d && d.captureWarmup) { try { d.captureWarmup(); } catch { /* 忽略 */ } }
       start = { x: e.clientX, y: e.clientY };
       rect.style.display = 'block';
       sizeEl.style.display = 'block';

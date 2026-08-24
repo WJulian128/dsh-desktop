@@ -78,6 +78,7 @@ let contextWatcher = null;
 let scheduler = null;
 let quickWindow = null;
 let captureWindow = null;
+let captureBackdrop = null; // 冻结快照缓存 { img, at }（startBackdropCapture 写入，capture-region 复用）
 let gitDiffWindow = null;
 let tray = null;
 let quitting = false;
@@ -803,7 +804,7 @@ function createQuickCommandWindow() {
     height: 200,
     x: Math.round((display.bounds.x + width - w) / 2),
     y: display.bounds.y,
-    frame: false, transparent: true, resizable: false, movable: false,
+    frame: false, transparent: false, resizable: false, movable: false,
     alwaysOnTop: true, skipTaskbar: true, hasShadow: false,
     icon: WINDOW_ICON,
     show: false,
@@ -2577,28 +2578,13 @@ function registerDesktopFeatureIpc() {
 
   /* ---- 截图 / 附件 / 新对话接续 ---- */
 
-  ipcMain.handle('dsh:screenshot', () => { openCaptureWindow(); return { ok: true }; });
-
-  // 截图预热：mousedown 时并行启动全屏捕获，mouseup 提交时大概率已就绪（消除松手后的 1-3s 等待）
-  let captureWarm = null; // { promise, at }
-
-  ipcMain.handle('dsh:capture-warmup', async () => {
-    try {
-      if (captureWarm && Date.now() - captureWarm.at < 5000) return { ok: true, cached: true };
-      const display = screen.getPrimaryDisplay();
-      const sf = display.scaleFactor || 1;
-      captureWarm = {
-        at: Date.now(),
-        promise: desktopCapturer.getSources({
-          types: ['screen'],
-          thumbnailSize: { width: Math.round(display.bounds.width * sf), height: Math.round(display.bounds.height * sf) },
-        }),
-      };
-      captureWarm.promise.catch(() => { captureWarm = null; }); // 失败自清，不阻塞
-      return { ok: true, cached: false };
-    } catch (err) {
-      return { ok: false, error: (err && err.message) || String(err) };
-    }
+  // 冻结快照式截图：点击按钮 → 立即显示选区窗（先显示"正在捕获屏幕…"）→ 主进程并行
+  // 捕获全屏 → 把冻结画面发给选区窗作背景 → 用户在冻结画面上框选 → 提交时直接从缓存
+  // 图像裁剪（零等待）。透明悬浮窗方案（软件渲染下显示/拖选都很卡）已废弃。
+  ipcMain.handle('dsh:screenshot', () => {
+    openCaptureWindow();
+    startBackdropCapture();
+    return { ok: true };
   });
 
   ipcMain.handle('dsh:capture-region', async (_event, region) => {
@@ -2606,26 +2592,23 @@ function registerDesktopFeatureIpc() {
     try {
       const display = screen.getPrimaryDisplay();
       const sf = display.scaleFactor || 1;
-      // 优先用预热结果（鼠标拖动期间已并行捕获），过期/未就绪再现场捕获
-      let sources = null;
-      if (captureWarm && Date.now() - captureWarm.at < 5000) {
-        try { sources = await captureWarm.promise; } catch { sources = null; }
-      }
-      if (!sources) {
-        sources = await desktopCapturer.getSources({
+      // 优先用点击按钮时捕获的冻结画面；失效才现场捕获（兜底）
+      let img = (captureBackdrop && Date.now() - captureBackdrop.at < 15000) ? captureBackdrop.img : null;
+      if (!img) {
+        const sources = await desktopCapturer.getSources({
           types: ['screen'],
           thumbnailSize: { width: Math.round(display.bounds.width * sf), height: Math.round(display.bounds.height * sf) },
         });
+        const source = sources.find((s) => s.display_id === String(display.id)) || sources[0];
+        if (!source) throw new Error('\u65e0\u6cd5\u83b7\u53d6\u5c4f\u5e55\u5185\u5bb9');
+        img = source.thumbnail;
       }
-      captureWarm = null;
-      const source = sources.find((s) => s.display_id === String(display.id)) || sources[0];
-      if (!source) throw new Error('\u65e0\u6cd5\u83b7\u53d6\u5c4f\u5e55\u5185\u5bb9');
-      const img = source.thumbnail.crop({
+      const cropped = img.crop({
         x: Math.round((region.x || 0) * sf), y: Math.round((region.y || 0) * sf),
         width: Math.round((region.width || 10) * sf), height: Math.round((region.height || 10) * sf),
       });
-      const png = img.toPNG();
-      logLine('[screenshot] \u6355\u83b7+\u7f16\u7801 ' + (Date.now() - t0) + 'ms\uff08' + Math.round((region.width || 10) * sf) + 'x' + Math.round((region.height || 10) * sf) + '\uff09');
+      const png = cropped.toPNG();
+      logLine('[screenshot] \u63d0\u4ea4\u2192\u88c1\u526a\u7f16\u7801 ' + (Date.now() - t0) + 'ms\uff08' + Math.round((region.width || 10) * sf) + 'x' + Math.round((region.height || 10) * sf) + '\uff09');
       clipboard.writeImage(nativeImage.createFromBuffer(png));
       // 持久保存到工作区附件目录（备用；agent 可按需用 dsh_desktop_describe_image 引用）
       let attachDir = path.join(state.workspace || os.tmpdir(), '.dsh-attachments');
@@ -2642,10 +2625,9 @@ function registerDesktopFeatureIpc() {
         const win = mainWindow;
         if (win && !win.isDestroyed()) {
           win.webContents.send('dsh:screenshot-ready', { dataUrl, path: file, ts: Date.now() });
-          // 预识别（截图时就开始，不阻塞返回）：纯文本模型会话发送截图被拒时，
-          // 补救流程可直接用这里的识别结果（零等待），彻底消除"识别中占位被误发"。
-          // 识别过程照常经 visionBroadcast 在环境信息面板展示卡片。
-          preRecognizeScreenshot(file);
+          // 不再截图后立即预识别：截图错了就是白白浪费本地视觉算力（用户明确要求）。
+          // 识别改为"按需"：仅在纯文本模型发送截图被拒时由页面补救流程当场启动
+          // （describeImagePath 路径，见 client.js 发送被拒补救），识别结果依旧缓存复用。
           return { ok: true };
         }
       } catch (err) { logLine('[screenshot] \u8349\u7a3f\u6ce8\u5165\u901a\u77e5\u5931\u8d25\uff1a' + (err && err.message ? err.message : err)); }
@@ -3161,9 +3143,32 @@ function backupOptions(includeCredentials, includeSessions) {
 /* ---------- 截图 / 附件 / 新对话接续 ---------- */
 
 function closeCaptureWindow() {
-  // 隐藏而非销毁：透明窗口创建在软件渲染下很慢，复用消除再次点击截图按钮的等待
+  // 隐藏而非销毁：窗口创建在软件渲染下很慢，复用消除再次点击截图按钮的等待
   if (captureWindow && !captureWindow.isDestroyed()) {
     try { captureWindow.hide(); } catch { /* 忽略 */ }
+  }
+}
+
+/** 捕获全屏冻结画面并发送给选区窗口作背景（失败静默，提交时兜底现场捕获）。 */
+async function startBackdropCapture() {
+  try {
+    const t0 = Date.now();
+    const display = screen.getPrimaryDisplay();
+    const sf = display.scaleFactor || 1;
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: Math.round(display.bounds.width * sf), height: Math.round(display.bounds.height * sf) },
+    });
+    const source = sources.find((s) => s.display_id === String(display.id)) || sources[0];
+    if (!source) throw new Error('\u65e0\u6cd5\u83b7\u53d6\u5c4f\u5e55\u5185\u5bb9');
+    captureBackdrop = { img: source.thumbnail, at: Date.now() };
+    logLine('[screenshot] \u80cc\u666f\u6355\u83b7 ' + (Date.now() - t0) + 'ms');
+    const dataUrl = 'data:image/png;base64,' + source.thumbnail.toPNG().toString('base64');
+    if (captureWindow && !captureWindow.isDestroyed()) {
+      captureWindow.webContents.send('dsh:capture-backdrop', { dataUrl });
+    }
+  } catch (err) {
+    logLine('[screenshot] \u80cc\u666f\u6355\u83b7\u5931\u8d25\uff1a' + ((err && err.message) || err));
   }
 }
 
@@ -3175,15 +3180,17 @@ function openCaptureWindow() {
     captureWindow.setAlwaysOnTop(true, 'screen-saver');
     captureWindow.show();
     captureWindow.focus();
+    // 清掉上次的冻结画面，显示"正在捕获屏幕…"，等新背景到达
+    try { captureWindow.webContents.send('dsh:capture-reset'); } catch { /* 忽略 */ }
     return;
   }
   const display = screen.getPrimaryDisplay();
   const { x, y, width, height } = display.bounds;
   captureWindow = new BrowserWindow({
     x, y, width, height,
-    frame: false, transparent: true, resizable: false, movable: false,
+    frame: false, transparent: false, resizable: false, movable: false,
     fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, hasShadow: false,
-    show: false, // 预创建时隐藏；openCaptureWindow 显示
+    show: false, backgroundColor: '#0d1117', // 预创建时隐藏；openCaptureWindow 显示
     icon: WINDOW_ICON,
     webPreferences: {
       preload: path.join(APP_DIR, 'preload', 'preload.js'),
@@ -3210,9 +3217,9 @@ function precreateCaptureWindow() {
     const { x, y, width, height } = display.bounds;
     captureWindow = new BrowserWindow({
       x, y, width, height,
-      frame: false, transparent: true, resizable: false, movable: false,
+      frame: false, transparent: false, resizable: false, movable: false,
       fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, hasShadow: false,
-      show: false,
+      show: false, backgroundColor: '#0d1117',
       icon: WINDOW_ICON,
       webPreferences: {
         preload: path.join(APP_DIR, 'preload', 'preload.js'),
@@ -3798,40 +3805,13 @@ function visionBroadcast() {
   return { send, startedAt, id };
 }
 
-/** 截图预识别（异步、不阻塞）：截图完成即开始识别，结果经 dsh:screenshot-desc 推给页面缓存。
- *  纯文本模型会话发送截图被拒时，补救流程直用该结果——零等待、无"识别中"占位被误发的风险。
- *  仅当视觉启用且当前会话模型不支持图片时执行（多模态模型无需兜底）。
- *  幂等：同路径只识别一次；失败静默（补救流程会现场重试）。 */
-const preRecognized = new Set();
-function preRecognizeScreenshot(file) {
-  try {
-    if (!file || preRecognized.has(file)) return;
-    preRecognized.add(file);
-    if (preRecognized.size > 50) preRecognized.clear(); // 防无限增长
-    const vision = settings.get('vision');
-    if (!vision || vision.enabled === false) return;
-    if (modelSupportsVision(currentModelCached())) return; // 官方多模态模型无需兜底识别
-    const vb = visionBroadcast();
-    vb.send({ phase: 'start' });
-    describeImage(effectiveVision(vision), { path: file, dshHome: state.dshHome, stream: true, onDelta: (text) => vb.send({ phase: 'delta', text }) })
-      .then((description) => {
-        const elapsedMs = Date.now() - vb.startedAt;
-        vb.send({ phase: 'done', elapsedMs, chars: description.length });
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('dsh:screenshot-desc', {
-            path: file,
-            description,
-            elapsedMs,
-            model: vision && vision.model ? String(vision.model) : '',
-          });
-        }
-      })
-      .catch((err) => {
-        vb.send({ phase: 'error', message: (err && err.message) || String(err), elapsedMs: Date.now() - vb.startedAt });
-        logLine('[vision] \u9884\u8bc6\u522b\u5931\u8d25\uff08\u7559\u7ed9\u8865\u6551\u73b0\u573a\u91cd\u8bd5\uff09\uff1a' + (err && err.message ? err.message : err));
-      });
-  } catch { /* 预识别失败静默 */ }
-}
+/**
+ * 截图预识别已按用户要求停用：截图完成后不再立即调用视觉模型（截图错了就是白白浪费算力）。
+ * 识别改为"按需"：纯文本模型会话发送截图被拒时，由页面补救流程当场调用
+ * dsh:describe-image-path 识别（结果同样缓存复用），链路与文案见 client.js「发送被拒补救」。
+ * （如需恢复"截图即预识别"，重新在 capture-region 成功后调用本函数即可——实现已删除，
+ *  可参考 git 历史 74f6ce2 之前的版本。）
+ */
 
 /** 后台预热本地视觉模型：首次推理含模型加载（可 60s+），预热后后续识别明显变快。
  *  仅当视觉源为本地 Ollama 时预热——云端视觉（小米 MiMo / DeepSeek 官方等）不预热，
