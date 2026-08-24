@@ -2578,12 +2578,21 @@ function registerDesktopFeatureIpc() {
 
   /* ---- 截图 / 附件 / 新对话接续 ---- */
 
-  // 冻结快照式截图：点击按钮 → 立即显示选区窗（先显示"正在捕获屏幕…"）→ 主进程并行
-  // 捕获全屏 → 把冻结画面发给选区窗作背景 → 用户在冻结画面上框选 → 提交时直接从缓存
-  // 图像裁剪（零等待）。透明悬浮窗方案（软件渲染下显示/拖选都很卡）已废弃。
+  // 冻结快照式截图：点击按钮 → 先清残留（窗口保持隐藏）→ 并行捕获全屏 → 冻结画面
+  // 送达隐藏窗口后**才显示窗口**——彻底消灭"黑屏等待"阶段（旧流程先显示暗色窗口再等画面，
+  // 那几百毫秒~1 秒的暗窗就是用户看到的黑屏）。
   ipcMain.handle('dsh:screenshot', () => {
-    startBackdropCapture(); // 先启动捕获（并行，约数百 ms），窗口先显示"正在捕获屏幕…"
-    openCaptureWindow();
+    openCaptureWindow(); // 确保窗口存在 + 清掉上一次残留（隐藏态，不显示）
+    const t0 = Date.now();
+    startBackdropCapture()
+      .then((ok) => {
+        if (ok || Date.now() - t0 > 1800) showCaptureWindow();
+      })
+      .catch(() => showCaptureWindow());
+    // 安全阀：2.5s 内无论成败都显示（捕获挂死时也能框选，提交时现场捕获兜底）
+    setTimeout(() => {
+      try { if (captureWindow && !captureWindow.isDestroyed() && !captureWindow.isVisible()) showCaptureWindow(); } catch { /* 忽略 */ }
+    }, 2500);
     return { ok: true };
   });
 
@@ -3182,22 +3191,25 @@ async function startBackdropCapture() {
       if (captureWindow && !captureWindow.isDestroyed()) {
         captureWindow.webContents.send('dsh:capture-backdrop', { dataUrl });
       }
+      return true;
     } catch (err) {
-      // 展示画面失败不影响功能：窗口保持提示，提交时现场捕获兜底
+      // 展示画面失败不影响功能：返回 true 表示"可以显示窗口"（提交时现场捕获兜底）
       logLine('[screenshot] \u5c55\u793a\u753b\u9762\u751f\u6210\u5931\u8d25\uff08\u4e0d\u5f71\u54cd\u63d0\u4ea4\uff09\uff1a' + ((err && err.message) || err));
+      return true;
     }
   } catch (err) {
     logLine('[screenshot] \u80cc\u666f\u6355\u83b7\u5931\u8d25\uff1a' + ((err && err.message) || err));
+    return false;
   }
 }
 
-/** 全屏透明选区窗口（renderer/capture.html 里拖选区域）。预创建 + 复用：显示时重新定位到当前主屏。 */
+/** 确保截图选区窗口存在（隐藏态）并清掉上一次残留（背景/选框），**不显示**。
+ *  显示由 showCaptureWindow() 在冻结画面就绪后执行——消灭黑屏等待。 */
 function openCaptureWindow() {
   if (captureWindow && !captureWindow.isDestroyed()) {
     const display = screen.getPrimaryDisplay();
     try { captureWindow.setBounds(display.bounds); } catch { /* 忽略 */ }
-    captureWindow.setAlwaysOnTop(true, 'screen-saver');
-    // 显示前先清掉上一次的冻结画面与蓝色选框（同步 executeJavaScript，绝不闪旧图/旧框）
+    // 清掉上一次的冻结画面与蓝色选框（同步 executeJavaScript，隐藏态清理，绝不闪旧图/旧框）
     try {
       captureWindow.webContents.executeJavaScript(
         "(() => { var s = document.getElementById('stage'); if (s) s.style.backgroundImage = 'none'; " +
@@ -3206,8 +3218,6 @@ function openCaptureWindow() {
         "var z = document.getElementById('size'); if (z) z.style.display = 'none'; return true; })()",
       );
     } catch { /* 页面未就绪则靠页面自身重置 */ }
-    captureWindow.show();
-    captureWindow.focus();
     return;
   }
   const display = screen.getPrimaryDisplay();
@@ -3216,7 +3226,7 @@ function openCaptureWindow() {
     x, y, width, height,
     frame: false, transparent: false, resizable: false, movable: false,
     fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, hasShadow: false,
-    show: false, backgroundColor: '#0d1117', // 预创建时隐藏；openCaptureWindow 显示
+    show: false, backgroundColor: '#0d1117',
     icon: WINDOW_ICON,
     webPreferences: {
       preload: path.join(APP_DIR, 'preload', 'preload.js'),
@@ -3226,13 +3236,14 @@ function openCaptureWindow() {
   captureWindow.setAlwaysOnTop(true, 'screen-saver');
   captureWindow.on('closed', () => { captureWindow = null; });
   captureWindow.loadFile(path.join(APP_DIR, 'renderer', 'capture.html'));
-  captureWindow.once('ready-to-show', () => {
-    // 首次打开（预创建后）：加载完成再显示，避免白屏闪烁
-    if (captureWindow && !captureWindow.isDestroyed()) {
-      try { captureWindow.show(); } catch { /* 忽略 */ }
-      try { captureWindow.focus(); } catch { /* 忽略 */ }
-    }
-  });
+}
+
+/** 显示截图选区窗口（冻结画面已送达隐藏窗口，显示即见画面，零黑屏）。 */
+function showCaptureWindow() {
+  if (!captureWindow || captureWindow.isDestroyed()) return;
+  try { captureWindow.setAlwaysOnTop(true, 'screen-saver'); } catch { /* 忽略 */ }
+  try { captureWindow.show(); } catch { /* 忽略 */ }
+  try { captureWindow.focus(); } catch { /* 忽略 */ }
 }
 
 /** 应用启动时预创建截图选区窗口（隐藏），首次点击截图按钮零创建延迟。 */
