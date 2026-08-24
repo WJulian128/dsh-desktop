@@ -44,6 +44,21 @@ const mod = captured.factory(fakeRequire);
 check('factory exports apply', typeof mod.apply === 'function', '');
 check('factory exports inject', Array.isArray(mod.inject) && mod.inject.includes('slots'), JSON.stringify(mod.inject));
 
+// 2b. parseGitSummary 单元测试（历史 bug 回归防护：分支行「## main」以 # 开头，
+//     曾被误当小节头提前 break 导致永远解析失败 → 面板永远显示「非 Git 工作区」）
+{
+  const parse = mod._parseGitSummary;
+  check('_parseGitSummary exported', typeof parse === 'function', '');
+  const withUp = parse('# git status\n## main...origin/main [ahead 1]\n\n# git diff\n（无未暂存改动）');
+  check('parse: upstream + ahead', !!withUp && withUp.branch === 'main' && withUp.ahead === 1 && withUp.behind === 0 && withUp.changed === 0, JSON.stringify(withUp));
+  const noUp = parse('# git status\n## main\n\n# git diff\n（无未暂存改动）');
+  check('parse: no upstream', !!noUp && noUp.branch === 'main' && noUp.ahead === 0 && noUp.changed === 0, JSON.stringify(noUp));
+  const withChanges = parse('# git status\n## feat...origin/feat\n M a.js\n?? b.js\n\n# git diff --stat\n a.js | 1 +\n');
+  check('parse: changed files count', !!withChanges && withChanges.branch === 'feat' && withChanges.changed === 2, JSON.stringify(withChanges));
+  const notGit = parse('# 当前目录不是 Git 仓库');
+  check('parse: not-a-repo -> null', notGit === null, JSON.stringify(notGit));
+}
+
 // 3. 执行 apply(ctx)，捕获 slots.inject 注册
 const registrations = [];
 const ctx = {

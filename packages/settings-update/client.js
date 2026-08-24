@@ -1908,13 +1908,15 @@ window.__ModuleLoader__.load({
     }
 
     /** 解析 dsh:git-summary 输出（# git status / ## 分支...上游 [ahead N, behind M] / 变更行）。非 Git 仓库返回 null。
-     *  分支展示：只取 ... 前的本地分支名（main...origin/main → main）；无上游括号时同样处理。 */
+     *  分支展示：只取 ... 前的本地分支名（main...origin/main → main）。
+     *  ⚠️ 小节头判定必须是「# + 空格」（# git diff --stat 等）——分支行「## main...」也以 # 开头，
+     *  若用 startsWith('#') 会把分支行当成小节头提前 break，导致永远解析失败（历史 bug）。 */
     function parseGitSummary(output) {
       const lines = String(output || '').split('\n');
       const start = lines.findIndex((l) => l.trim() === '# git status');
       const status = start >= 0 ? lines.slice(start + 1) : lines;
       const block = [];
-      for (const l of status) { if (l.startsWith('#')) break; block.push(l); }
+      for (const l of status) { if (/^#\s/.test(l)) break; block.push(l); }
       const branchLine = block.find((l) => l.startsWith('## '));
       if (!branchLine) return null;
       const raw = branchLine.slice(3);
@@ -3133,6 +3135,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject;
     // 便于单测的内部状态（不影响官方加载器）
     exports._subagentBusy = subagentBusyStore;
+    exports._parseGitSummary = parseGitSummary;
     return module.exports;
   },
 });
