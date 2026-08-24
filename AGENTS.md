@@ -35,7 +35,7 @@
 - 图片：走 harness 附件管道。双轨机制——当前会话模型为官方多模态模型（`deepseek-v4-flash-vision-exp`）时图片由 harness 原生直传（Files API），无需额外处理；当前模型为纯文本模型（如 `deepseek-v4-flash`/`deepseek-v4-pro`）时，遇到图片附件引用（`sha256:<64位十六进制>`）、图片文件或图片 URL，调用 `mcp__dsh_desktop__describe_image` 获取文字描述后再继续。
 - 其他附件：文件被复制到工作区 `.dsh-attachments/` 目录，对话框里会给清单；用 `read`/`grep` 等工具读取内容。
 
-<!-- dsh-desktop-norms:v3:begin -->
+<!-- dsh-desktop-norms:v4:begin -->
 
 ## 桌面端自动规范（由 DSH Desktop 自动维护）
 
@@ -65,4 +65,11 @@
 
 - 右侧「模型调度 → 子代理运行」只显示**当前对话**派发的子代理；切换对话后面板内容随之切换。
 
-<!-- dsh-desktop-norms:v3:end -->
+### 5. 多轮代码一致性（防止写着写着乱了）
+
+- **多轮修改/长任务编码必须按 `code-consistency` skill 工作**：改前读项目 `.dsh/code-conventions.md` 约定快照（无则创建），新文件模仿锚点文件风格；改后 5 条自查（命名一致、无风格混入、不重复造轮子、不越界改动、无调试残留）。
+- **决策回写**：每轮新做的风格/架构决策立即追加进约定快照并同步 memory MCP——漂移的根因是"记忆漂移"，对策是把决策外置成文件，别靠对话记忆硬扛。
+- **不悄悄换风格**：要变风格就明说 + 全局一致迁移 + 更新快照；第三方/生成代码不顺手格式化。
+
+<!-- dsh-desktop-norms:v4:end -->
+

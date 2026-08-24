@@ -16,7 +16,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const NORM_VERSION = 3;
+const NORM_VERSION = 4;
 
 function marker(version, side) {
   return '<!-- dsh-desktop-norms:v' + version + ':' + side + ' -->';
@@ -53,6 +53,12 @@ function normBlock() {
     '### 4. 模型调度面板',
     '',
     '- 右侧「模型调度 → 子代理运行」只显示**当前对话**派发的子代理；切换对话后面板内容随之切换。',
+    '',
+    '### 5. 多轮代码一致性（防止写着写着乱了）',
+    '',
+    '- **多轮修改/长任务编码必须按 `code-consistency` skill 工作**：改前读项目 `.dsh/code-conventions.md` 约定快照（无则创建），新文件模仿锚点文件风格；改后 5 条自查（命名一致、无风格混入、不重复造轮子、不越界改动、无调试残留）。',
+    '- **决策回写**：每轮新做的风格/架构决策立即追加进约定快照并同步 memory MCP——漂移的根因是"记忆漂移"，对策是把决策外置成文件，别靠对话记忆硬扛。',
+    '- **不悄悄换风格**：要变风格就明说 + 全局一致迁移 + 更新快照；第三方/生成代码不顺手格式化。',
     '',
     marker(NORM_VERSION, 'end'),
     '',

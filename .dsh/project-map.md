@@ -19,6 +19,7 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 
 ## 关键约定
 - ⚠️ 编码红线：.ps1/.js 源文件禁止 PowerShell 5.1 Get-Content/Set-Content 往返（UTF-8 无 BOM 被当 GBK）；.ps1 含中文必须带 UTF-8 BOM 或纯 ASCII；改文件一律用 read/edit/write 工具或 Node 显式 utf8
+- **代码一致性**：多轮编码按 code-consistency skill 工作——约定快照在 `.dsh/code-conventions.md`（每轮写码前必读、新决策回写、memory 实体 code-conventions-dsh-desktop 同步）
 - 客户端插件源码在 packages/settings-update/，node_modules/@dsh-desktop/settings-update 是指向它的 junction，勿改 node_modules 副本
 - 改 main 进程代码需重启桌面端生效；改 client.js 重启服务即可（mcp__dsh_desktop__restart_app 带 task 可自动接续）
 - 纯 Node 模块（无 Electron 依赖）放 main/ 顶层并配 scripts/ 单测：project-map、workspace-guard、agents-norms、git-runner、subagent-stream、subagent-center、transcript-check、memory-store、usage、notify 等
@@ -39,7 +40,7 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 ## 重点文件职责摘要
 - main/project-map.js：项目代码地图存储与 stale 指纹判定（.dsh/project-map.md + state.json；saveMap 增量合并指纹，tracked 返回合并后总数）
 - main/workspace-guard.js：多会话编辑占用（claims.json，30min 过期）+ 变更日志（change-journal.jsonl）
-- main/agents-norms.js：把地图/并发/Git 纪律作为版本化块幂等写入全局与项目 AGENTS.md（v3）
+- main/agents-norms.js：把地图/并发/Git/多轮代码一致性纪律作为版本化块（v4）幂等写入全局与项目 AGENTS.md（启动时自动补齐）
 - main/git-runner.js：runGit + gitSummary + 白名单安全操作（init/status/diff/log/commit/branch/checkout/restore/stash）
 - main/subagent-stream.js：子代理推理流读取（缓存+增量续读，listSubagentStream 输出 parentSession）
 - main/panel-stream-worker.js：面板流 worker（list/since/contains 三任务），缓存常驻 worker；主线程经 panelStreamTask 派发
@@ -51,4 +52,5 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - renderer/git-diff.html：Git 变更窗（分支/提交/回滚/复制 + 其他会话占用警告横幅）
 - scripts/install-skills.mjs：多来源 skills 安装器（core/sp/mp 三清单，frontmatter 归一化）
 - scripts/test-project-map.js、test-workspace-guard.js、test-transcript-check.js：新模块单测
+- .dsh/code-conventions.md：代码约定快照（code-consistency skill 维护，含锚点文件清单）
 - .gitignore：排除依赖/构建产物/本地运行时状态；保留 .dsh/project-map.md 共享
