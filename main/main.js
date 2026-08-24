@@ -2582,8 +2582,8 @@ function registerDesktopFeatureIpc() {
   // 捕获全屏 → 把冻结画面发给选区窗作背景 → 用户在冻结画面上框选 → 提交时直接从缓存
   // 图像裁剪（零等待）。透明悬浮窗方案（软件渲染下显示/拖选都很卡）已废弃。
   ipcMain.handle('dsh:screenshot', () => {
+    startBackdropCapture(); // 先启动捕获（并行，约数百 ms），窗口先显示"正在捕获屏幕…"
     openCaptureWindow();
-    startBackdropCapture();
     return { ok: true };
   });
 
@@ -3149,7 +3149,9 @@ function closeCaptureWindow() {
   }
 }
 
-/** 捕获全屏冻结画面并发送给选区窗口作背景（失败静默，提交时兜底现场捕获）。 */
+/** 捕获全屏冻结画面并发送给选区窗口作背景（失败静默，提交时兜底现场捕获）。
+ *  展示用画面降采样到 DIP 分辨率 JPEG（几十~几百 KB）：全尺寸 PNG base64 达数 MB，
+ *  传输+解码要数秒——那段时间不透明窗口盖住全屏就表现为"黑屏"。裁剪仍用全尺寸原图。 */
 async function startBackdropCapture() {
   try {
     const t0 = Date.now();
@@ -3163,7 +3165,9 @@ async function startBackdropCapture() {
     if (!source) throw new Error('\u65e0\u6cd5\u83b7\u53d6\u5c4f\u5e55\u5185\u5bb9');
     captureBackdrop = { img: source.thumbnail, at: Date.now() };
     logLine('[screenshot] \u80cc\u666f\u6355\u83b7 ' + (Date.now() - t0) + 'ms');
-    const dataUrl = 'data:image/png;base64,' + source.thumbnail.toPNG().toString('base64');
+    // 展示降采样：宽度压到 DIP 宽度，JPEG 质量 80——传输/解码瞬间完成
+    const disp = source.thumbnail.resize({ width: Math.round(display.bounds.width), quality: 'good' });
+    const dataUrl = 'data:image/jpeg;base64,' + disp.toJPEG(80).toString('base64');
     if (captureWindow && !captureWindow.isDestroyed()) {
       captureWindow.webContents.send('dsh:capture-backdrop', { dataUrl });
     }
@@ -3178,10 +3182,15 @@ function openCaptureWindow() {
     const display = screen.getPrimaryDisplay();
     try { captureWindow.setBounds(display.bounds); } catch { /* 忽略 */ }
     captureWindow.setAlwaysOnTop(true, 'screen-saver');
+    // 显示前先清掉上一次的冻结画面（同步 executeJavaScript，绝不闪旧图）
+    try {
+      captureWindow.webContents.executeJavaScript(
+        "(() => { var s = document.getElementById('stage'); if (s) s.style.backgroundImage = 'none'; " +
+        "var h = document.getElementById('hint'); if (h) h.textContent = '正在捕获屏幕…'; return true; })()",
+      );
+    } catch { /* 页面未就绪则靠页面自身重置 */ }
     captureWindow.show();
     captureWindow.focus();
-    // 清掉上次的冻结画面，显示"正在捕获屏幕…"，等新背景到达
-    try { captureWindow.webContents.send('dsh:capture-reset'); } catch { /* 忽略 */ }
     return;
   }
   const display = screen.getPrimaryDisplay();
