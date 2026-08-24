@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Git 变更 — DeepSeek Harness</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 13px/1.5 system-ui, "Segoe UI", sans-serif; background: #0d1117; color: #e6edf3; display: flex; flex-direction: column; height: 100vh; }
+    header { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid #21262d; flex: none; flex-wrap: wrap; }
+    header .title { font-weight: 600; margin-right: auto; }
+    button { cursor: pointer; border: 1px solid #30363d; background: transparent; color: #8b949e; border-radius: 6px; padding: 4px 12px; font: inherit; transition: color .15s, border-color .15s; }
+    button:hover { border-color: #4d5a6a; color: #e6edf3; }
+    button:disabled { opacity: .5; cursor: default; }
+    button.danger:hover { border-color: #f85149; color: #f85149; }
+    #status { color: #8b949e; font-size: 12px; }
+    #banner { display: none; margin: 8px 14px 0; padding: 8px 12px; border: 1px solid #9e6a03; border-radius: 8px; background: rgba(210, 153, 34, .08); color: #d29922; font-size: 12px; flex: none; }
+    #commitbar { display: none; margin: 8px 14px 0; flex: none; }
+    #commitbar input { width: 100%; border: 1px solid #30363d; background: #161b22; color: #e6edf3; border-radius: 6px; padding: 6px 10px; font: inherit; }
+    pre { flex: 1; margin: 0; padding: 12px 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 ui-monospace, Consolas, monospace; color: #c9d1d9; }
+    .err { color: #f85149; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="title">Git 变更</span>
+    <span id="status">—</span>
+    <button id="branch">分支</button>
+    <button id="commitBtn">提交…</button>
+    <button id="restore" class="danger">回滚全部改动</button>
+    <button id="refresh">刷新</button>
+    <button id="copy">复制</button>
+  </header>
+  <div id="banner"></div>
+  <div id="commitbar">
+    <input id="commitMsg" placeholder="提交说明：做了什么、为什么（会自动带上会话归属前缀）" />
+    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:8px;">
+      <button id="commitCancel">取消</button>
+      <button id="commitDo">提交</button>
+    </div>
+  </div>
+  <pre id="content">正在读取…</pre>
+  <script>
+    'use strict';
+    const d = window.dshDesktop;
+    const content = document.getElementById('content');
+    const status = document.getElementById('status');
+    const refreshBtn = document.getElementById('refresh');
+    const banner = document.getElementById('banner');
+    const commitbar = document.getElementById('commitbar');
+    const commitMsg = document.getElementById('commitMsg');
+
+    if (!d || !d.gitSummary) {
+      content.textContent = '此窗口需要通过桌面应用打开（预加载桥接不可用）。';
+      refreshBtn.disabled = true;
+    }
+
+    function setStatus(text, isErr) {
+      status.textContent = text;
+      status.classList.toggle('err', !!isErr);
+    }
+
+    async function loadClaims() {
+      if (!d || !d.editStatus) return;
+      try {
+        const r = await d.editStatus();
+        if (!r || !r.ok) return;
+        if (r.others && r.others.length) {
+          banner.style.display = 'block';
+          banner.textContent = '⚠ 其他对话正在修改：' + r.others.map((c) => c.file).join('、') + '——提交/回滚前请先确认不会覆盖它们的工作。';
+        } else {
+          banner.style.display = 'none';
+          banner.textContent = '';
+        }
+      } catch { /* 忽略 */ }
+    }
+
+    async function refresh() {
+      if (!d || !d.gitSummary) return;
+      refreshBtn.disabled = true;
+      setStatus('刷新中…');
+      loadClaims();
+      try {
+        const r = await d.gitSummary();
+        if (!r.ok) { content.textContent = r.error || '读取失败'; content.classList.add('err'); setStatus('失败', true); }
+        else { content.textContent = r.output; content.classList.remove('err'); setStatus(r.workspace || ''); }
+      } catch (err) {
+        content.textContent = String((err && err.message) || err);
+        content.classList.add('err');
+        setStatus('失败', true);
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    document.getElementById('refresh').addEventListener('click', refresh);
+    document.getElementById('copy').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(content.textContent); setStatus('已复制'); } catch { /* 忽略 */ }
+    });
+    document.getElementById('branch').addEventListener('click', async () => {
+      if (!d || !d.gitBranch) return;
+      const r = await d.gitBranch();
+      if (r && r.ok) setStatus('分支：' + (r.output || '').replace(/\n/g, ' '));
+      else setStatus((r && r.error) || '读取分支失败', true);
+    });
+    document.getElementById('commitBtn').addEventListener('click', () => {
+      commitbar.style.display = commitbar.style.display === 'none' ? 'block' : 'none';
+      if (commitbar.style.display !== 'none') commitMsg.focus();
+    });
+    document.getElementById('commitCancel').addEventListener('click', () => { commitbar.style.display = 'none'; commitMsg.value = ''; });
+    document.getElementById('commitDo').addEventListener('click', async () => {
+      const msg = commitMsg.value.trim();
+      if (!msg) { setStatus('请先填写提交说明', true); return; }
+      if (!d || !d.gitCommit) return;
+      setStatus('提交中…');
+      const r = await d.gitCommit(msg);
+      if (r && r.ok) {
+        setStatus('已提交：' + (r.output || '').split('\n')[0]);
+        commitbar.style.display = 'none';
+        commitMsg.value = '';
+        refresh();
+      } else {
+        setStatus((r && r.error) || '提交失败', true);
+      }
+    });
+    document.getElementById('restore').addEventListener('click', async () => {
+      if (!d || !d.gitRestore) return;
+      const sure = window.confirm('确定回滚全部未提交改动吗？此操作会丢弃工作区中所有未提交的修改（git restore .），无法撤销。');
+      if (!sure) return;
+      setStatus('回滚中…');
+      const r = await d.gitRestore();
+      if (r && r.ok) { setStatus('已回滚'); refresh(); }
+      else setStatus((r && r.error) || '回滚失败', true);
+    });
+    window.addEventListener('focus', refresh);
+    refresh();
+  </script>
+</body>
+</html>

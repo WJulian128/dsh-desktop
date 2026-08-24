@@ -1,0 +1,22 @@
+{
+  "name": "@dsh-desktop/settings-update",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DSH Desktop 注入的浏览器插件：在 harness 设置页注册“桌面端”分区（版本与检查更新）",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  }
+}

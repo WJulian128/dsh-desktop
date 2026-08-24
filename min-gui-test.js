@@ -1,0 +1,1 @@
+const {app,BrowserWindow}=require('electron'); console.log('step1'); app.whenReady().then(()=>{ console.log('step2'); const w=new BrowserWindow({show:false}); w.loadURL('data:text/html,<h1>hi</h1>').then(()=>{ console.log('step3'); w.destroy(); app.exit(0); }); }); setTimeout(()=>{ console.log('TIMEOUT'); app.exit(3); }, 30000);

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DeepSeek Harness 桌面端</title>
+<link rel="icon" href="icon.png">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #0e1116;
+    background-image: radial-gradient(1100px 700px at 50% -12%, rgba(45, 62, 96, .35) 0%, transparent 62%);
+    color: #e6edf3; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { width: min(520px, 88vw); text-align: center; padding: 24px; }
+  .logo {
+    width: 72px; height: 72px; margin: 0 auto 26px; display: block; opacity: .95;
+  }
+  h1 { font-size: 17px; font-weight: 600; letter-spacing: .02em; margin: 0 0 10px; color: #f0f3f6; }
+  .status {
+    color: #8b949e; font-size: 13px; line-height: 20px; min-height: 20px;
+    margin-bottom: 22px; word-break: break-all;
+  }
+  .spinner {
+    width: 22px; height: 22px; margin: 0 auto 26px; border-radius: 50%;
+    border: 2px solid #30363d; border-top-color: #8b949e; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error {
+    margin: 0 auto 22px; padding: 12px 16px; border-radius: 10px; background: rgba(248, 81, 73, .08);
+    border: 1px solid rgba(248, 81, 73, .28); color: #ffa198; font-size: 13px; text-align: left;
+    white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto;
+  }
+  .actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  button {
+    appearance: none; border: 1px solid #30363d; background: transparent; color: #c9d1d9;
+    border-radius: 8px; padding: 7px 16px; font-size: 13px; cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  button:hover { background: #161b22; border-color: #4d5a6a; color: #e6edf3; }
+  button.primary { background: #1f4fd8; border-color: #1f4fd8; color: #fff; }
+  button.primary:hover { background: #2f5fe8; border-color: #2f5fe8; }
+  .meta { margin-top: 28px; color: #57606a; font-size: 12px; line-height: 18px; white-space: pre-line; }
+</style>
+</head>
+<body>
+<main>
+  <img class="logo" src="icon.png" alt="DSH 桌面端">
+  <h1>DeepSeek Harness 桌面端</h1>
+  <div class="status" id="status">正在启动…</div>
+  <div class="spinner" id="spinner"></div>
+  <div class="error" id="error" hidden></div>
+  <div class="actions">
+    <button class="primary" id="retry" hidden>重试</button>
+    <button id="workspace">切换工作区</button>
+    <button id="logs">打开日志</button>
+  </div>
+  <p class="meta" id="meta"></p>
+</main>
+<script src="loading.js"></script>
+</body>
+</html>

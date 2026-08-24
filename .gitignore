@@ -1,0 +1,29 @@
+# ---- DSH Desktop 项目工作区 ----
+
+# 依赖与构建产物
+node_modules/
+release/
+dist/
+out/
+build/
+logs/
+*.log
+dump-web.*
+
+# 桌面端本地状态（.dsh/ 下的运行时状态不入库；项目代码地图例外，可随仓库共享）
+.dsh/*
+!.dsh/project-map.md
+
+# 附件（截图等）
+.dsh-attachments/
+
+# SDD 工作区（subagent-driven-development 技能生成）
+.superpowers/
+
+# Windows 垃圾文件
+Thumbs.db
+Desktop.ini
+
+# 编辑器
+.vscode/
+.idea/

@@ -1,0 +1,53 @@
+# electron-builder 配置：把 DSH 桌面端打成真正的 Windows 软件（NSIS 安装包 + 便携版）。
+# asar: false —— 应用以真实文件形式安装到 resources/app：
+#   1) 桌面端靠 junction 把客户端插件链接进 $DSH_HOME/profiles/node_modules，
+#      链接目标必须是真实目录；
+#   2) MCP 服务器（main/mcp-server.mjs）由 node 或 Electron(ELECTRON_RUN_AS_NODE)
+#      以独立进程拉起，真实路径下 ESM/依赖解析零风险；
+#   3) harness 自更新直接 npm install 到 %APPDATA%\dsh-desktop\dsh，与安装目录无关。
+appId: com.dsh.desktop
+productName: DSH Desktop
+copyright: Copyright © 2025 DSH Desktop
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - main/**/*
+  - preload/**/*
+  - renderer/**/*
+  - package.json
+  # node_modules 生产依赖由 electron-builder 按 package.json dependencies 自动收集
+  # （@dsh-desktop/settings-update 是 file: 依赖，指向 packages/，勿排除）
+  - "!scripts/**"
+  - "!release/**"
+  - "!*.md"
+  - "!*.yml"
+  - "!*.yaml"
+  - "!.gitignore"
+  - "!.dsh*/**"
+  - "!AGENTS.md"
+
+asar: false
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DSH Desktop
+  artifactName: ${productName}-Setup-${version}.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}

@@ -1,0 +1,12 @@
+{
+  "name": "@dsh-desktop/subagent-approval",
+  "version": "0.1.0",
+  "description": "子代理工具审批桥：子代理 skill/MCP 请求向上审批（父代理模型批准），任何权限模式下生效",
+  "main": "lib/index.js",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-user-approval": "0.1.1-rc.2"
+  }
+}
