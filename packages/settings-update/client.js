@@ -1239,6 +1239,7 @@ window.__ModuleLoader__.load({
     /* ================= 输入框常驻工具按钮组（截图 + 附加文件） ================= */
     /** conversation 服务引用（apply 时从 ctx 获取；ScreenshotButton 注入草稿图片用）。 */
     let convService = null;
+    let envGitSig = null; // env-git 诊断日志去重签名（避免 5s 轮询刷爆主进程日志）
 
     function ScreenshotButton(props) {
       const disabled = !api() || !api().screenshot;
@@ -2085,16 +2086,20 @@ window.__ModuleLoader__.load({
           if (d.gitSummary) d.gitSummary().then((r) => {
             if (disposed) return;
             setGit(r);
-            // 诊断回报：把客户端实际收到的 git 载荷回传主进程日志（定位「非 Git 工作区」真因）
+            // 诊断回报（只在签名变化时记录，避免 5s 轮询刷爆日志）
             if (typeof d.clientDebug === 'function') {
               try {
-                d.clientDebug({
-                  src: 'env-git',
-                  ok: !!(r && r.ok),
-                  notGit: !!(r && r.notGit),
-                  error: (r && r.error) || null,
-                  head: (r && r.output) ? String(r.output).split('\n').filter((l) => l.trim()).slice(0, 4).join(' | ').slice(0, 300) : '(空输出)',
-                }).catch(() => {});
+                const sig = [!!(r && r.ok), !!(r && r.notGit), (r && r.error) || '', (r && r.output) ? String(r.output).split('\n').filter((l) => l.trim()).slice(0, 4).join(' | ').slice(0, 200) : '(空输出)'].join('||');
+                if (sig !== envGitSig) {
+                  envGitSig = sig;
+                  d.clientDebug({
+                    src: 'env-git',
+                    ok: !!(r && r.ok),
+                    notGit: !!(r && r.notGit),
+                    error: (r && r.error) || null,
+                    head: (r && r.output) ? String(r.output).split('\n').filter((l) => l.trim()).slice(0, 4).join(' | ').slice(0, 300) : '(空输出)',
+                  }).catch(() => {});
+                }
               } catch { /* 诊断失败不影响面板 */ }
             }
           }).catch((err) => {

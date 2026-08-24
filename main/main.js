@@ -79,6 +79,7 @@ let scheduler = null;
 let quickWindow = null;
 let captureWindow = null;
 let captureBackdrop = null; // 冻结快照缓存 { img, at }（startBackdropCapture 写入，capture-region 复用）
+let lastBackdropDataUrl = null; // 最近一次展示画面（show 后重发兜底用）
 let gitDiffWindow = null;
 let tray = null;
 let quitting = false;
@@ -3191,6 +3192,7 @@ async function startBackdropCapture() {
     try {
       const disp = source.thumbnail.resize({ width: Math.round(display.bounds.width), quality: 'good' });
       const dataUrl = 'data:image/jpeg;base64,' + disp.toJPEG(80).toString('base64');
+      lastBackdropDataUrl = dataUrl;
       if (captureWindow && !captureWindow.isDestroyed()) {
         captureWindow.webContents.send('dsh:capture-backdrop', { dataUrl });
       }
@@ -3241,12 +3243,16 @@ function openCaptureWindow() {
   captureWindow.loadFile(path.join(APP_DIR, 'renderer', 'capture.html'));
 }
 
-/** 显示截图选区窗口（冻结画面已送达隐藏窗口，显示即见画面，零黑屏）。 */
+/** 显示截图选区窗口（冻结画面已送达隐藏窗口，显示即见画面，零黑屏）。
+ *  显示后再补发一次背景（兜底：隐藏态送达偶发丢消息 → 黑屏），页面侧幂等 setBackdrop。 */
 function showCaptureWindow() {
   if (!captureWindow || captureWindow.isDestroyed()) return;
   try { captureWindow.setAlwaysOnTop(true, 'screen-saver'); } catch { /* 忽略 */ }
   try { captureWindow.show(); } catch { /* 忽略 */ }
   try { captureWindow.focus(); } catch { /* 忽略 */ }
+  if (lastBackdropDataUrl) {
+    try { captureWindow.webContents.send('dsh:capture-backdrop', { dataUrl: lastBackdropDataUrl, resend: true }); } catch { /* 忽略 */ }
+  }
 }
 
 /** 应用启动时预创建截图选区窗口（隐藏），首次点击截图按钮零创建延迟。 */

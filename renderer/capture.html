@@ -41,10 +41,16 @@
     const sizeEl = document.getElementById('size');
     const hintEl = document.getElementById('hint');
     let start = null;
+    const cdebug = (step, val) => {
+      if (d && typeof d.clientDebug === 'function') {
+        try { d.clientDebug({ src: 'capture-page', step, val }); } catch { /* 忽略 */ }
+      }
+    };
 
     function setBackdrop(dataUrl) {
       stage.style.backgroundImage = 'url("' + dataUrl + '")';
       hintEl.textContent = '拖动框选截图区域，松开完成 · Esc 取消';
+      cdebug('backdrop-set', String(dataUrl).length);
     }
     function resetAll() {
       stage.style.backgroundImage = 'none';
@@ -52,6 +58,7 @@
       rect.style.display = 'none';
       sizeEl.style.display = 'none';
       start = null;
+      cdebug('reset', '');
     }
 
     // 冻结画面到达（主进程捕获完成后推送）
@@ -61,6 +68,7 @@
     }
     // 窗口每次隐藏时自清（含蓝色选框），下次打开绝不残留上一次的框选痕迹
     document.addEventListener('visibilitychange', () => {
+      cdebug('vis', document.visibilityState);
       if (document.visibilityState === 'hidden') resetAll();
     });
 
