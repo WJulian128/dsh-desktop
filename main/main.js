@@ -24,7 +24,8 @@ const { inQuietHours } = require('./quiet-hours');
 const memoryStore = require('./memory-store');
 const { startAutoMemory } = require('./memory-watch');
 const subagentCenter = require('./subagent-center');
-const { gitSummary, gitInit, gitHead, gitStatus, gitDiff, gitLog, gitCommit, gitBranch, gitCheckout, gitRestore, gitStash } = require('./git-runner');
+const { gitSummary, gitInit, gitHead, gitStatus, gitDiff, gitLog, gitCommit, gitBranch, gitCheckout, gitRestore, gitStash, gitCurrentBranch, gitRemoteList, gitRemoteAdd, gitPush, gitPull, gitMerge } = require('./git-runner');
+const githubOps = require('./github');
 const projectMap = require('./project-map');
 const workspaceGuard = require('./workspace-guard');
 const { ensureNorms, NORM_VERSION } = require('./agents-norms');
@@ -1822,6 +1823,104 @@ function startRpc() {
     return result;
   });
 
+  /* ---- GitHub 集成（设备码登录 / 远程仓库 / 代码搜索 / 推送拉取合并） ---- */
+
+  // 进行中的设备码登录（进程内保存 deviceCode，不落盘）
+  let pendingDeviceFlow = null;
+
+  rpc.on('githubStatus', async () => {
+    const st = await githubOps.status(state.dshHome);
+    // 附带本地仓库远程信息（分支工作流需要）
+    try {
+      const remote = await gitRemoteList(state.workspace);
+      st.remote = remote.ok ? String(remote.output || '').trim() : null;
+    } catch { st.remote = null; }
+    try {
+      st.branch = await gitCurrentBranch(state.workspace);
+    } catch { st.branch = null; }
+    return { ok: true, ...st };
+  });
+
+  rpc.on('githubLoginStart', async () => {
+    const flow = await githubOps.deviceFlowStart();
+    pendingDeviceFlow = { deviceCode: flow.deviceCode, expiresAt: Date.now() + flow.expiresIn * 1000 };
+    const { deviceCode, ...safe } = flow;
+    return { ok: true, ...safe };
+  });
+
+  rpc.on('githubLoginPoll', async () => {
+    if (!pendingDeviceFlow) return { ok: false, error: '未发起登录（先调 githubLoginStart）' };
+    if (Date.now() > pendingDeviceFlow.expiresAt) {
+      pendingDeviceFlow = null;
+      return { ok: false, error: '登录码已过期，请重新发起' };
+    }
+    const r = await githubOps.deviceFlowPoll(pendingDeviceFlow.deviceCode);
+    if (!r.pending) {
+      // 拿到 token：解析用户并存档
+      const user = await githubOps.whoami(r.token);
+      githubOps.writeAuth(state.dshHome, { token: r.token, login: user.login, authedAt: Date.now() });
+      pendingDeviceFlow = null;
+      return { ok: true, pending: false, login: user.login, name: user.name };
+    }
+    return { ok: true, pending: true, slowDown: r.slowDown === true };
+  });
+
+  rpc.on('githubLogout', async () => {
+    pendingDeviceFlow = null;
+    githubOps.clearAuth(state.dshHome);
+    return { ok: true };
+  });
+
+  /** 一键关联远程：登录态校验 → 创建私有仓库（同名已存在则复用）→ origin → 推送当前分支。 */
+  rpc.on('githubRemoteSetup', async (params) => {
+    const auth = githubOps.readAuth(state.dshHome);
+    if (!auth) return { ok: false, error: '未登录 GitHub（先登录再关联）' };
+    // 已有 origin 则跳过创建，直接推送
+    const existing = await gitRemoteList(state.workspace);
+    let repo = null;
+    if (!existing.ok || !String(existing.output || '').trim()) {
+      const name = String((params && params.name) || '').trim() || githubOps.suggestRepoName(state.workspace);
+      const isPrivate = params && params.isPrivate !== undefined ? Boolean(params.isPrivate) : true;
+      try {
+        repo = await githubOps.createRepo(auth.token, { name, description: 'DSH Desktop workspace: ' + path.basename(state.workspace), isPrivate });
+      } catch (err) {
+        return { ok: false, error: (err && err.message) || String(err) };
+      }
+      const added = await gitRemoteAdd(state.workspace, { name: 'origin', url: repo.cloneUrl });
+      if (!added.ok) return { ok: false, error: '远程关联失败：' + (added.error || added.output) };
+    }
+    const pushed = await gitPush(state.workspace, { remote: 'origin' });
+    if (!pushed.ok) return { ok: false, error: '推送失败：' + (pushed.error || pushed.output) };
+    broadcastPanelRefresh('git');
+    return { ok: true, repo: repo && { name: repo.name, fullName: repo.fullName, htmlUrl: repo.htmlUrl, isPrivate: repo.isPrivate }, pushed: pushed.output };
+  });
+
+  rpc.on('githubSearchCode', async (params) => {
+    const auth = githubOps.readAuth(state.dshHome);
+    if (!auth) return { ok: false, error: '未登录 GitHub' };
+    const q = String((params && params.q) || '').trim();
+    if (!q) return { ok: false, error: 'q 必填（GitHub 代码搜索语法，如 repo:owner/name keyword）' };
+    const result = await githubOps.searchCode(auth.token, q, params && params.perPage);
+    return { ok: true, ...result };
+  });
+
+  rpc.on('gitPush', async (params) => {
+    const result = await gitPush(state.workspace, params || {});
+    if (result && result.ok) broadcastPanelRefresh('git');
+    return result;
+  });
+  rpc.on('gitPull', async (params) => {
+    const result = await gitPull(state.workspace, params || {});
+    if (result && result.ok) broadcastPanelRefresh('git');
+    return result;
+  });
+  rpc.on('gitMerge', async (params) => {
+    const result = await gitMerge(state.workspace, params || {});
+    if (result && result.ok) broadcastPanelRefresh('git');
+    return result;
+  });
+  rpc.on('gitRemoteList', async () => gitRemoteList(state.workspace));
+
   return rpc.start();
 }
 
@@ -2039,6 +2138,85 @@ function registerDesktopFeatureIpc() {
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };
     }
+  });
+
+  // GitHub 集成（设置页分区：登录状态 / 设备码登录 / 一键关联远程仓库）
+  const githubStatusPayload = async () => {
+    const st = await githubOps.status(state.dshHome);
+    try {
+      const remote = await gitRemoteList(state.workspace);
+      st.remote = remote.ok ? String(remote.output || '').trim() : null;
+    } catch { st.remote = null; }
+    try {
+      st.branch = await gitCurrentBranch(state.workspace);
+    } catch { st.branch = null; }
+    return { ok: true, ...st };
+  };
+
+  ipcMain.handle('dsh:github-status', async () => {
+    try { return await githubStatusPayload(); } catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
+  });
+
+  // 用系统浏览器打开外链（GitHub 验证页等）
+  ipcMain.handle('dsh:open-external', async (_event, payload) => {
+    const url = String((payload && payload.url) || '').trim();
+    if (!/^https?:\/\//i.test(url)) return { ok: false, error: '仅允许 http(s) 链接' };
+    try { await shell.openExternal(url); return { ok: true }; } catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
+  });
+
+  let pendingDeviceFlow = null; // 设备码登录进行中（进程内）
+
+  ipcMain.handle('dsh:github-login-start', async () => {
+    try {
+      const flow = await githubOps.deviceFlowStart();
+      pendingDeviceFlow = { deviceCode: flow.deviceCode, expiresAt: Date.now() + flow.expiresIn * 1000 };
+      const { deviceCode, ...safe } = flow;
+      return { ok: true, ...safe };
+    } catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
+  });
+
+  ipcMain.handle('dsh:github-login-poll', async () => {
+    try {
+      if (!pendingDeviceFlow) return { ok: false, error: '未发起登录' };
+      if (Date.now() > pendingDeviceFlow.expiresAt) {
+        pendingDeviceFlow = null;
+        return { ok: false, error: '登录码已过期，请重新发起' };
+      }
+      const r = await githubOps.deviceFlowPoll(pendingDeviceFlow.deviceCode);
+      if (!r.pending) {
+        const user = await githubOps.whoami(r.token);
+        githubOps.writeAuth(state.dshHome, { token: r.token, login: user.login, authedAt: Date.now() });
+        pendingDeviceFlow = null;
+        return { ok: true, pending: false, login: user.login, name: user.name };
+      }
+      return { ok: true, pending: true, slowDown: r.slowDown === true };
+    } catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
+  });
+
+  ipcMain.handle('dsh:github-logout', async () => {
+    pendingDeviceFlow = null;
+    githubOps.clearAuth(state.dshHome);
+    return { ok: true };
+  });
+
+  ipcMain.handle('dsh:github-remote-setup', async (_event, payload) => {
+    try {
+      const auth = githubOps.readAuth(state.dshHome);
+      if (!auth) return { ok: false, error: '未登录 GitHub' };
+      const existing = await gitRemoteList(state.workspace);
+      let repo = null;
+      if (!existing.ok || !String(existing.output || '').trim()) {
+        const name = String((payload && payload.name) || '').trim() || githubOps.suggestRepoName(state.workspace);
+        const isPrivate = payload && payload.isPrivate !== undefined ? Boolean(payload.isPrivate) : true;
+        repo = await githubOps.createRepo(auth.token, { name, description: 'DSH Desktop workspace: ' + path.basename(state.workspace), isPrivate });
+        const added = await gitRemoteAdd(state.workspace, { name: 'origin', url: repo.cloneUrl });
+        if (!added.ok) return { ok: false, error: '远程关联失败：' + (added.error || added.output) };
+      }
+      const pushed = await gitPush(state.workspace, { remote: 'origin' });
+      if (!pushed.ok) return { ok: false, error: '推送失败：' + (pushed.error || pushed.output) };
+      broadcastPanelRefresh('git');
+      return { ok: true, repo: repo && { name: repo.name, fullName: repo.fullName, htmlUrl: repo.htmlUrl, isPrivate: repo.isPrivate }, pushed: pushed.output };
+    } catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
   });
 
   // Git 窗操作（提交/回滚/分支），提交自动带活动会话归属前缀

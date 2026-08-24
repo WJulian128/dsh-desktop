@@ -65,6 +65,15 @@ const rpc = createServer((req, res) => {
     if (payload.method === 'gitRestore') return send(200, { ok: true, result: { ok: true, output: '' } });
     if (payload.method === 'gitStash') return send(200, { ok: true, result: { ok: true, output: 'stash@{0}' } });
     if (payload.method === 'gitInit') return send(200, { ok: true, result: { ok: true, output: 'Initialized' } });
+    if (payload.method === 'githubStatus') return send(200, { ok: true, result: { ok: true, authed: true, login: 'octocat', branch: 'main', remote: 'origin\thttps://github.com/octocat/repo.git (fetch)' } });
+    if (payload.method === 'githubLoginStart') return send(200, { ok: true, result: { ok: true, userCode: 'ABCD-1234', verificationUri: 'https://github.com/login/device', expiresIn: 900, interval: 5 } });
+    if (payload.method === 'githubLoginPoll') return send(200, { ok: true, result: { ok: true, pending: false, login: 'octocat' } });
+    if (payload.method === 'githubRemoteSetup') return send(200, { ok: true, result: { ok: true, repo: { name: 'repo', fullName: 'octocat/repo', htmlUrl: 'https://github.com/octocat/repo', isPrivate: true }, pushed: 'pushed' } });
+    if (payload.method === 'githubSearchCode') return send(200, { ok: true, result: { ok: true, total: 1, items: [{ name: 'a.js', path: 'src/a.js', repository: 'o/r', htmlUrl: 'https://github.com/o/r/blob/main/a.js' }] } });
+    if (payload.method === 'gitPush') return send(200, { ok: true, result: { ok: true, output: 'pushed main' } });
+    if (payload.method === 'gitPull') return send(200, { ok: true, result: { ok: true, output: 'Already up to date.' } });
+    if (payload.method === 'gitMerge') return send(200, { ok: true, result: { ok: true, output: 'Fast-forward' } });
+    if (payload.method === 'gitRemoteList') return send(200, { ok: true, result: { ok: true, output: 'origin\thttps://github.com/o/r.git (fetch)' } });
     send(200, { ok: true, result: { echo: payload.method, params: payload.params } });
   });
 });
@@ -128,6 +137,14 @@ try {
   check('has dsh_desktop_git_checkout', names.includes('dsh_desktop_git_checkout'), '');
   check('has dsh_desktop_git_restore', names.includes('dsh_desktop_git_restore'), '');
   check('has dsh_desktop_git_init', names.includes('dsh_desktop_git_init'), '');
+  check('has dsh_desktop_github_status', names.includes('dsh_desktop_github_status'), '');
+  check('has dsh_desktop_github_login', names.includes('dsh_desktop_github_login'), '');
+  check('has dsh_desktop_github_login_wait', names.includes('dsh_desktop_github_login_wait'), '');
+  check('has dsh_desktop_github_remote_setup', names.includes('dsh_desktop_github_remote_setup'), '');
+  check('has dsh_desktop_github_search_code', names.includes('dsh_desktop_github_search_code'), '');
+  check('has dsh_desktop_git_push', names.includes('dsh_desktop_git_push'), '');
+  check('has dsh_desktop_git_pull', names.includes('dsh_desktop_git_pull'), '');
+  check('has dsh_desktop_git_merge', names.includes('dsh_desktop_git_merge'), '');
 
   const doctor = await client.callTool({ name: 'dsh_desktop_system_doctor', arguments: {} });
   const doctorText = (doctor.content || []).map((c) => c.text || '').join('\n');
@@ -248,6 +265,14 @@ try {
   const gitCm = await client.callTool({ name: 'dsh_desktop_git_commit', arguments: { message: '修复 bug' } });
   const gitCmText = (gitCm.content || []).map((c) => c.text || '').join('\n');
   check('git_commit passes message', gitCmText.includes('abc123'), gitCmText.slice(0, 120));
+
+  const ghStatus = await client.callTool({ name: 'dsh_desktop_github_status', arguments: {} });
+  const ghText = (ghStatus.content || []).map((c) => c.text || '').join('\n');
+  check('github_status formats login + branch + remote', ghText.includes('octocat') && ghText.includes('main') && ghText.includes('github.com'), ghText.slice(0, 150));
+
+  const ghPush = await client.callTool({ name: 'dsh_desktop_git_push', arguments: {} });
+  const ghPushText = (ghPush.content || []).map((c) => c.text || '').join('\n');
+  check('git_push formats output', ghPushText.includes('pushed main'), ghPushText.slice(0, 100));
 
   await client.close();
 } catch (err) {

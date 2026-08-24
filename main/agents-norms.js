@@ -16,7 +16,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const NORM_VERSION = 4;
+const NORM_VERSION = 5;
 
 function marker(version, side) {
   return '<!-- dsh-desktop-norms:v' + version + ':' + side + ' -->';
@@ -49,6 +49,8 @@ function normBlock() {
     '- 已完成的改动必须落提交：提交信息写清**做了什么、为什么**（不要只写 update/fix）。',
     '- 破坏性/大面积操作（重构、批量删除/移动）前，先提交当前进度。',
     '- 分支切换用 `mcp__dsh_desktop__git_checkout`（有未提交变更时自动 stash 保护）；回滚用 `git_restore` / `git_stash`，**不用 `reset --hard`、不用 `push --force`**。',
+    '- **分支真正用起来**：较大任务/特性改动开 feature 分支（`git_checkout` create=true），完成后 `git_merge` 合并回主分支并 `git_push`；日常小改直接在主干提交推送。',
+    '- **与 GitHub 互通**：登录走设置页「GitHub 与 Git」分区（设备码快速登录，无需 gh CLI）；无远程时 `github_remote_setup` 一键创建私有仓库并推送；查找参考实现用 `github_search_code`。',
     '',
     '### 4. 模型调度面板',
     '',

@@ -59,7 +59,7 @@ const overlays = registrations.filter((r) => r.slot === 'shell.overlay').map((r)
 const composerDock = registrations.filter((r) => r.slot === 'conversation.composer.dock').map((r) => r.registration);
 const inputLeft = registrations.filter((r) => r.slot === 'conversation.input.left').map((r) => r.registration);
 const headerActions = registrations.filter((r) => r.slot === 'conversation.session.header.actions').map((r) => r.registration);
-check('registers 8 settings.section entries', sections.length === 8, 'count=' + sections.length);
+check('registers 9 settings.section entries', sections.length === 9, 'count=' + sections.length);
 check('no shell.overlay occupants (panels live in composer dock)', overlays.length === 0, 'count=' + overlays.length);
 check('status pill + right panels (env+sched always-on) in composer.dock',
   composerDock.length === 2 &&

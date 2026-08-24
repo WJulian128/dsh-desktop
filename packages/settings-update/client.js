@@ -2010,6 +2010,7 @@ window.__ModuleLoader__.load({
       const [act, setAct] = react.useState(null);
       const [map, setMap] = react.useState(null);      // 项目代码地图状态
       const [claims, setClaims] = react.useState(null); // 多会话编辑占用
+      const [github, setGithub] = react.useState(null); // GitHub 集成状态
       const visionItems = useVisionStream();
 
       // 订阅本地视觉识别流：识别开始自动展开侧边栏（调用本地视觉模型即打开），
@@ -2091,6 +2092,8 @@ window.__ModuleLoader__.load({
           if (usageTick % 12 === 0 && d.getUsage) d.getUsage().then((r) => { if (!disposed && r && r.ok) setUsage(r.summary || r); }).catch(() => {});
           // activity 扫描需解压会话文件：每 4 轮（20s）一次
           if (usageTick % 4 === 0 && d.activityGet) d.activityGet().then((r) => { if (!disposed && r && r.ok) setAct(r); }).catch(() => {});
+          // GitHub 状态（含一次 /user API 调用）：20s 降频
+          if (usageTick % 4 === 0 && d.githubStatus) d.githubStatus().then((r) => { if (!disposed && r && r.ok) setGithub(r); }).catch(() => {});
         };
         // 会话切换时立即全量刷新，之后每 5 秒刷新（Git/地图/占用轻量高频；usage/activity 降频）
         refresh(false);
@@ -2205,7 +2208,15 @@ window.__ModuleLoader__.load({
               claims.others && claims.others.length
                 ? h('p', { key: 'c1', style: { ...st.hint, padding: '2px 0 0', color: 'var(--dsw-alias-state-business-primary, #d29922)' } },
                   '⚠ ' + claims.others.map((c) => c.file.split(/[\\/]/).pop()).join('、') + ' 正在被其他对话修改')
-                : null)));
+                : null)),
+
+        h('div', { style: envGroupTitle }, 'GitHub'),
+        h('div', { style: { display: 'flex', flexDirection: 'column' } },
+          github === null
+            ? h('p', { key: 'gh0', style: { ...st.hint, padding: '2px' } }, '读取中…')
+            : h('div', { key: 'gh', style: { display: 'flex', flexDirection: 'column' } },
+              envRow('账号', github.authed ? github.login : '未登录', 'gha'),
+              envRow('远程', github.remote ? String(github.remote).split('\n')[0].split('\t')[0].trim() : '未关联', 'ghr'))));
     }
 
     /* ================= 模型调度面板（右侧常驻双面板下半区；厂商总览 + 子代理实时输出） ================= */
@@ -2404,6 +2415,98 @@ window.__ModuleLoader__.load({
 
         h('div', { style: envGroupTitle }, '子代理运行'),
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } }, subCards));
+    }
+
+    /* ================= GitHub 与 Git（登录 / 远程 / 分支） ================= */
+    function GithubSection() {
+      const [status, setStatus] = react.useState(null);
+      const [flow, setFlow] = react.useState(null); // 设备码登录进行中：{ verificationUri, userCode }
+      const [busy, setBusy] = react.useState(false);
+      const [msg, setMsg] = react.useState(null);
+      const pollTimer = react.useRef(null);
+
+      react.useEffect(() => {
+        refresh();
+        return () => { if (pollTimer.current) clearInterval(pollTimer.current); };
+      }, []);
+
+      const showMsg = (tone, text) => setMsg({ tone, text });
+      const refresh = () => {
+        const d = api();
+        if (!d || !d.githubStatus) return;
+        d.githubStatus().then((r) => { if (r && r.ok) setStatus(r); }).catch(() => {});
+      };
+
+      const startLogin = async () => {
+        setBusy(true); showMsg(null);
+        try {
+          const r = await api().githubLoginStart();
+          if (!r.ok) { showMsg('error', r.error || '发起失败'); return; }
+          setFlow(r);
+          showMsg('busy', '已生成登录码：打开 ' + r.verificationUri + ' 输入 ' + r.userCode + ' 并授权（scope: repo）。');
+          pollTimer.current = setInterval(async () => {
+            try {
+              const p = await api().githubLoginPoll();
+              if (!p.ok) { clearInterval(pollTimer.current); setFlow(null); showMsg('error', p.error || '登录失败'); refresh(); }
+              else if (p.pending === false) { clearInterval(pollTimer.current); setFlow(null); showMsg('ok', '登录成功：' + p.login); refresh(); }
+            } catch (err) {
+              clearInterval(pollTimer.current); setFlow(null);
+              showMsg('error', String((err && err.message) || err));
+            }
+          }, 4000);
+        } catch (err) { showMsg('error', String((err && err.message) || err)); }
+        finally { setBusy(false); }
+      };
+
+      const remoteSetup = async () => {
+        if (!window.confirm('将在 GitHub 创建私有仓库（默认用工作区目录名）并推送当前分支，继续？')) return;
+        setBusy(true); showMsg(null);
+        try {
+          const r = await api().githubRemoteSetup({});
+          if (!r.ok) { showMsg('error', r.error || '关联失败'); return; }
+          showMsg('ok', r.repo ? ('已创建 ' + r.repo.fullName + ' 并推送') : '已推送到 origin');
+          refresh();
+        } catch (err) { showMsg('error', String((err && err.message) || err)); }
+        finally { setBusy(false); }
+      };
+
+      const logout = async () => {
+        if (!window.confirm('断开 GitHub 登录？（不会删除远程仓库）')) return;
+        try { await api().githubLogout(); refresh(); showMsg('ok', '已断开登录'); }
+        catch (err) { showMsg('error', String((err && err.message) || err)); }
+      };
+
+      const remoteLine = status && status.remote ? String(status.remote).split('\n')[0].trim() : null;
+
+      return h("div", { style: st.grid },
+        h("div", { style: st.card },
+          h("div", { style: st.title }, "GitHub 与 Git"),
+          h("div", { style: st.note }, "代码与 GitHub 互通：设备码快速登录、一键创建私有仓库并推送；分支/推送/拉取/合并由模型用 dsh_desktop_git_* / dsh_desktop_github_* 工具完成。"),
+          h("div", { style: st.row },
+            h("span", { style: st.label }, "登录状态"),
+            h("span", { style: st.value }, status
+              ? (status.authed ? (status.login + (status.name ? '（' + status.name + '）' : '')) : ('未登录' + (status.error ? '（' + status.error + '）' : '')))
+              : '读取中…')),
+          h("div", { style: st.row },
+            h("span", { style: st.label }, "远程 origin"),
+            h("span", { style: st.value }, remoteLine || '未关联')),
+          h("div", { style: st.row },
+            h("span", { style: st.label }, "当前分支"),
+            h("span", { style: st.value }, (status && status.branch) || '—')),
+          flow
+            ? h("div", { style: { ...st.form, borderColor: 'var(--dsw-alias-state-business-primary, #d29922)' } },
+              h("div", { style: st.fieldLabel }, "登录码（打开网址输入后授权，自动完成）"),
+              h("div", { style: { fontFamily: 'ui-monospace, Consolas, monospace', fontSize: '22px', letterSpacing: '0.15em', padding: '8px 0', color: 'var(--dsw-alias-label-primary)' } }, flow.userCode),
+              h("div", { style: st.row },
+                btn('复制登录码', () => { try { navigator.clipboard.writeText(flow.userCode); } catch { /* 忽略 */ } }, { small: true }),
+                btn('打开验证网址', () => { const d = api(); if (d && d.openExternal) d.openExternal(flow.verificationUri); }, { small: true, primary: true })))
+            : null,
+          msg ? h("p", { style: msg.tone === 'ok' ? st.msgOk : st.msgErr }, msg.text) : null,
+          h("div", { style: st.actions },
+            btn(flow ? '登录中…' : '快速登录（设备码）', startLogin, { primary: !status || !status.authed, disabled: !!flow || busy }),
+            btn('一键关联远程仓库并推送', remoteSetup, { disabled: busy || !status || !status.authed }),
+            btn('断开登录', logout, { disabled: !status || !status.authed, danger: true }))),
+        h("p", { style: st.hint }, "分支工作流：较大任务用 git_checkout 开 feature 分支，完成后 git_merge 合并回主分支并 git_push；日常小改直接提交推送。登录后模型还可用 dsh_desktop_github_search_code 搜索 GitHub 代码参考实现。"));
     }
 
     /* ================= 定时任务 / 提醒 ================= */
@@ -2974,6 +3077,7 @@ window.__ModuleLoader__.load({
       }, InterjectButton));
       registerSection("desktop", 90, () => "桌面端", DesktopSection);
       registerSection("mcp", 85, () => "插件与 MCP", McpSection);
+      registerSection("github", 78, () => "GitHub 与 Git", GithubSection);
       registerSection("memory", 74, () => "记忆与子代理", MemorySection);
       registerSection("schedule", 73, () => "定时任务", ScheduleSection);
       registerSection("system", 72, () => "系统环境", SystemSection);

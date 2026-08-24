@@ -190,6 +190,77 @@ async function gitStash(cwd, opts = {}) {
   return toResult(await runGit(['stash', 'push', '-m', msg], cwd, { timeoutMs: GIT_TIMEOUT_MS }));
 }
 
+/* ============ GitHub 协作（远程/推送/拉取/合并，全部安全参数，禁 force） ============ */
+
+/** 当前分支名（无仓库/无提交返回 null）。 */
+async function gitCurrentBranch(cwd) {
+  const r = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd, { timeoutMs: 15000 });
+  if (!r.ok) return null;
+  return (r.output || '').trim() || null;
+}
+
+/** 远程列表：git remote -v（返回输出文本）。 */
+async function gitRemoteList(cwd) {
+  const err = await ensureRepo(cwd);
+  if (err) return { ok: false, error: err };
+  return toResult(await runGit(['remote', '-v'], cwd, { timeoutMs: 15000 }));
+}
+
+/** 添加/修改远程。name 默认 origin。 */
+async function gitRemoteAdd(cwd, opts = {}) {
+  const err = await ensureRepo(cwd);
+  if (err) return { ok: false, error: err };
+  const name = String(opts.name || 'origin').trim() || 'origin';
+  const url = String(opts.url || '').trim();
+  if (!/^https?:\/\/|^git@/.test(url)) return { ok: false, error: '远程地址需为 https:// 或 git@ 形式' };
+  // 已存在同名远程 → set-url；否则 add
+  const existing = await runGit(['remote', 'get-url', name], cwd, { timeoutMs: 15000 });
+  const args = existing.ok ? ['remote', 'set-url', name, url] : ['remote', 'add', name, url];
+  return toResult(await runGit(args, cwd, { timeoutMs: 30000 }));
+}
+
+/** 推送（禁 force）。push -u origin <branch>；branch 默认当前分支。 */
+async function gitPush(cwd, opts = {}) {
+  const err = await ensureRepo(cwd);
+  if (err) return { ok: false, error: err };
+  const remote = String(opts.remote || 'origin').trim() || 'origin';
+  let branch = String(opts.branch || '').trim();
+  if (!branch) {
+    branch = await gitCurrentBranch(cwd);
+    if (!branch) return { ok: false, error: '无法确定当前分支（无提交？）' };
+  }
+  const args = ['push', '-u', remote, branch];
+  return toResult(await runGit(args, cwd, { timeoutMs: 300000, maxBytes: 600000 }));
+}
+
+/** 拉取（默认 --ff-only，绝不产生意外合并）。 */
+async function gitPull(cwd, opts = {}) {
+  const err = await ensureRepo(cwd);
+  if (err) return { ok: false, error: err };
+  const remote = String(opts.remote || 'origin').trim() || 'origin';
+  let branch = String(opts.branch || '').trim();
+  if (!branch) branch = await gitCurrentBranch(cwd);
+  const args = ['pull', '--ff-only'];
+  if (remote && branch) args.push(remote, branch);
+  return toResult(await runGit(args, cwd, { timeoutMs: 300000, maxBytes: 600000 }));
+}
+
+/** 合并指定分支到当前分支（优先快进；冲突时提示用 resolving-merge-conflicts skill）。 */
+async function gitMerge(cwd, opts = {}) {
+  const err = await ensureRepo(cwd);
+  if (err) return { ok: false, error: err };
+  const branch = String(opts.branch || '').trim();
+  if (!branch) return { ok: false, error: 'branch 必填（要合并进来的分支）' };
+  const r = await runGit(['merge', '--no-edit', branch], cwd, { timeoutMs: 120000, maxBytes: 600000 });
+  if (r.ok) return { ok: true, output: r.output };
+  // 合并冲突：给出明确的下一步指引
+  const out = String(r.output || '') + (r.error || '');
+  if (/CONFLICT|conflict/i.test(out)) {
+    return { ok: false, error: '合并冲突：请按 resolving-merge-conflicts skill 处理（git status 看冲突文件，解决后 git add + git_commit 完成合并，或 git_restore 中止）。' + out.slice(0, 400) };
+  }
+  return { ok: false, error: 'merge 失败：' + out.slice(0, 400) };
+}
+
 module.exports = {
   runGit,
   gitSummary,
@@ -203,4 +274,10 @@ module.exports = {
   gitCheckout,
   gitRestore,
   gitStash,
+  gitCurrentBranch,
+  gitRemoteList,
+  gitRemoteAdd,
+  gitPush,
+  gitPull,
+  gitMerge,
 };

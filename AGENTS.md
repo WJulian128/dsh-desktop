@@ -35,7 +35,7 @@
 - 图片：走 harness 附件管道。双轨机制——当前会话模型为官方多模态模型（`deepseek-v4-flash-vision-exp`）时图片由 harness 原生直传（Files API），无需额外处理；当前模型为纯文本模型（如 `deepseek-v4-flash`/`deepseek-v4-pro`）时，遇到图片附件引用（`sha256:<64位十六进制>`）、图片文件或图片 URL，调用 `mcp__dsh_desktop__describe_image` 获取文字描述后再继续。
 - 其他附件：文件被复制到工作区 `.dsh-attachments/` 目录，对话框里会给清单；用 `read`/`grep` 等工具读取内容。
 
-<!-- dsh-desktop-norms:v4:begin -->
+<!-- dsh-desktop-norms:v5:begin -->
 
 ## 桌面端自动规范（由 DSH Desktop 自动维护）
 
@@ -60,6 +60,8 @@
 - 已完成的改动必须落提交：提交信息写清**做了什么、为什么**（不要只写 update/fix）。
 - 破坏性/大面积操作（重构、批量删除/移动）前，先提交当前进度。
 - 分支切换用 `mcp__dsh_desktop__git_checkout`（有未提交变更时自动 stash 保护）；回滚用 `git_restore` / `git_stash`，**不用 `reset --hard`、不用 `push --force`**。
+- **分支真正用起来**：较大任务/特性改动开 feature 分支（`git_checkout` create=true），完成后 `git_merge` 合并回主分支并 `git_push`；日常小改直接在主干提交推送。
+- **与 GitHub 互通**：登录走设置页「GitHub 与 Git」分区（设备码快速登录，无需 gh CLI）；无远程时 `github_remote_setup` 一键创建私有仓库并推送；查找参考实现用 `github_search_code`。
 
 ### 4. 模型调度面板
 
@@ -71,5 +73,6 @@
 - **决策回写**：每轮新做的风格/架构决策立即追加进约定快照并同步 memory MCP——漂移的根因是"记忆漂移"，对策是把决策外置成文件，别靠对话记忆硬扛。
 - **不悄悄换风格**：要变风格就明说 + 全局一致迁移 + 更新快照；第三方/生成代码不顺手格式化。
 
-<!-- dsh-desktop-norms:v4:end -->
+<!-- dsh-desktop-norms:v5:end -->
+
 

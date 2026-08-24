@@ -850,6 +850,185 @@ server.registerTool(
   },
 );
 
+// ---- GitHub 集成（设备码登录 / 远程仓库 / 代码搜索 / 分支协作） ----
+
+server.registerTool(
+  "dsh_desktop_github_status",
+  {
+    title: "GitHub 登录与远程状态",
+    description:
+      "查询 GitHub 集成状态：是否登录（login）、本地仓库当前分支、origin 远程地址。" +
+      "未登录时提示用户用 dsh_desktop_github_login 登录。",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const result = await call("githubStatus");
+    if (!result.ok) throw new Error(result.error || "查询失败");
+    const lines = [];
+    if (result.authed) {
+      lines.push("GitHub 已登录：" + result.login + (result.name ? "（" + result.name + "）" : "") + (result.htmlUrl ? " · " + result.htmlUrl : ""));
+    } else {
+      lines.push("GitHub 未登录——可调 dsh_desktop_github_login 快速登录（设备码）。");
+    }
+    lines.push("当前分支：" + (result.branch || "?"));
+    lines.push("远程 origin：" + (result.remote ? result.remote.split("\n")[0] : "未关联——登录后用 dsh_desktop_github_remote_setup 一键创建私有仓库并推送"));
+    return text(lines.join("\n"));
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_github_login",
+  {
+    title: "GitHub 快速登录（设备码）",
+    description:
+      "发起 GitHub 设备码登录：返回验证网址与用户码。请把网址和用户码展示给用户（打开网址、输入用户码、授权），" +
+      "然后调 dsh_desktop_github_login_wait 等待完成。无需 gh CLI、无需手动复制 token。",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const result = await call("githubLoginStart");
+    if (!result.ok) throw new Error(result.error || "发起失败");
+    return text(
+      "请在浏览器完成授权（约 15 分钟有效）：\n" +
+      "1. 打开 " + result.verificationUri + "\n" +
+      "2. 输入用户码：" + result.userCode + "\n" +
+      "3. 点授权（scope: repo，用于私有仓库与代码搜索）\n\n" +
+      "完成后调用 dsh_desktop_github_login_wait 等待登录结果。",
+    );
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_github_login_wait",
+  {
+    title: "等待 GitHub 登录完成",
+    description:
+      "轮询等待设备码授权结果（调用前需已执行 dsh_desktop_github_login；用户完成授权后本调用返回登录成功）。最多等待约 10 分钟。",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const deadline = Date.now() + 10 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const r = await call("githubLoginPoll");
+      if (r.ok && r.pending === false) {
+        return text("GitHub 登录成功：" + r.login + (r.name ? "（" + r.name + "）" : "") + "\n接下来可用 dsh_desktop_github_remote_setup 一键关联远程仓库。");
+      }
+      if (!r.ok) throw new Error(r.error || "登录失败");
+      await new Promise((res) => setTimeout(res, (r.slowDown ? 10 : 5) * 1000));
+    }
+    return text("等待超时：用户未在 10 分钟内完成授权。可重新调 dsh_desktop_github_login 再试。");
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_github_remote_setup",
+  {
+    title: "一键关联 GitHub 远程仓库并推送",
+    description:
+      "已登录状态下：本地仓库无 origin 时自动创建同名私有 GitHub 仓库（默认私有，name 可指定）并关联，然后推送当前分支（-u origin）。" +
+      "已有 origin 则直接推送。让代码与 GitHub 互通、分支真正用起来。",
+    inputSchema: z.object({
+      name: z.string().optional().describe("仓库名（缺省用工作区目录名）"),
+      isPrivate: z.boolean().optional().describe("默认 true（私有）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("githubRemoteSetup", { name: args.name, isPrivate: args.isPrivate });
+    if (!result.ok) throw new Error(result.error || "关联失败");
+    if (result.repo) {
+      return text("已创建并关联远程仓库：\n" + result.repo.fullName + "（" + (result.repo.isPrivate ? "私有" : "公开") + "）\n" + result.repo.htmlUrl + "\n推送结果：" + String(result.pushed || "").slice(0, 600));
+    }
+    return text("已推送到 origin：" + String(result.pushed || "").slice(0, 600));
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_github_search_code",
+  {
+    title: "GitHub 代码搜索",
+    description:
+      "搜索 GitHub 上的代码（需已登录）：q 用 GitHub 代码搜索语法，如 \"repo:owner/name keyword\"、" +
+      "\"filename:config.js keyword\"、\"org:github language:javascript keyword\"。返回匹配文件与仓库，方便模型查找参考实现。",
+    inputSchema: z.object({
+      q: z.string().describe("搜索语法（如 repo:owner/name 关键词）"),
+      perPage: z.number().optional().describe("条数（默认 10，上限 20）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("githubSearchCode", { q: args.q, perPage: args.perPage });
+    if (!result.ok) throw new Error(result.error || "搜索失败");
+    const lines = ["GitHub 代码搜索结果（共 " + result.total + " 条，显示 " + (result.items || []).length + "）："];
+    for (const it of result.items || []) {
+      lines.push("- " + it.repository + " · " + it.path + " · " + it.htmlUrl);
+    }
+    return text(lines.join("\n"));
+  },
+);
+
+// ---- Git 分支协作（push/pull/merge，全部禁 force） ----
+
+server.registerTool(
+  "dsh_desktop_git_push",
+  {
+    title: "Git 推送到远程",
+    description: "推送当前分支到远程（-u origin <branch>；禁 force）。未关联远程先调 dsh_desktop_github_remote_setup。",
+    inputSchema: z.object({
+      branch: z.string().optional().describe("分支名（缺省当前分支）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("gitPush", { branch: args.branch });
+    if (!result.ok) throw new Error(result.error || "推送失败");
+    return text(result.output || "已推送");
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_git_pull",
+  {
+    title: "Git 拉取（仅快进）",
+    description: "从远程拉取（--ff-only，绝不产生意外合并）。",
+    inputSchema: z.object({
+      branch: z.string().optional().describe("分支名（缺省当前分支）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("gitPull", { branch: args.branch });
+    if (!result.ok) throw new Error(result.error || "拉取失败");
+    return text(result.output || "已更新");
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_git_merge",
+  {
+    title: "Git 合并分支",
+    description: "把指定分支合并进当前分支（优先快进）。冲突时按 resolving-merge-conflicts skill 处理。",
+    inputSchema: z.object({
+      branch: z.string().describe("要合并进来的分支名"),
+    }),
+  },
+  async (args) => {
+    const result = await call("gitMerge", { branch: args.branch });
+    if (!result.ok) throw new Error(result.error || "合并失败");
+    return text(result.output || "已合并");
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_git_remote",
+  {
+    title: "Git 远程列表",
+    description: "查看远程仓库列表（git remote -v）。",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const result = await call("gitRemoteList");
+    if (!result.ok) throw new Error(result.error || "读取失败");
+    return text(result.output || "（无远程）");
+  },
+);
+
 // ---- 生命周期 ----
 const transport = new StdioServerTransport();
 try {

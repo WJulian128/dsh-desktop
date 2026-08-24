@@ -61,6 +61,14 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   gitRestore: () => ipcRenderer.invoke('dsh:git-restore'),
   gitBranch: () => ipcRenderer.invoke('dsh:git-branch'),
 
+  // GitHub 集成（设置页 + 环境信息面板）
+  githubStatus: () => ipcRenderer.invoke('dsh:github-status'),
+  githubLoginStart: () => ipcRenderer.invoke('dsh:github-login-start'),
+  githubLoginPoll: () => ipcRenderer.invoke('dsh:github-login-poll'),
+  githubLogout: () => ipcRenderer.invoke('dsh:github-logout'),
+  githubRemoteSetup: (payload) => ipcRenderer.invoke('dsh:github-remote-setup', payload),
+  openExternal: (url) => ipcRenderer.invoke('dsh:open-external', { url }),
+
   // Ollama 本地视觉模型集成
   ollamaStatus: () => ipcRenderer.invoke('dsh:ollama-status'),
   ollamaInstall: () => ipcRenderer.invoke('dsh:ollama-install'),
