@@ -1051,6 +1051,88 @@ server.registerTool(
   },
 );
 
+// ---- UI 内省（读桌面端自己窗口的 DOM：结构化定位/精确点击/读文本/自窗口截图） ----
+
+server.registerTool(
+  "dsh_desktop_ui_snapshot",
+  {
+    title: "UI 元素清单（桌面端窗口）",
+    description:
+      "读取桌面端自己窗口（harness 页面）的可点击元素清单：标签、类型、id/class 与精确坐标（页面坐标系）。" +
+      "用于精确点击与状态验证——不要再用屏幕截图+OCR 猜坐标：先 snapshot 拿到元素，再 ui_click 按文本/选择器点击，最后 ui_text/ui_capture 验证。",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const result = await call("uiSnapshot");
+    if (!result.ok) throw new Error(result.error || "读取失败");
+    const els = (result.elements || []).slice(0, 60);
+    const lines = ['视口 ' + result.vw + '×' + result.vh + '（dpr ' + result.dpr + '），共 ' + (result.elements || []).length + ' 个可点击元素，显示前 ' + els.length + '：'];
+    for (let i = 0; i < els.length; i++) {
+      const e = els[i];
+      const id = e.text ? " '" + e.text.slice(0, 40) + "'" : '';
+      lines.push(i + '. <' + e.tag + '>' + id + ' @(' + e.x + ',' + e.y + ' ' + e.w + '×' + e.h + ')' + (e.id ? ' #' + e.id : '') + (e.cls ? ' .' + e.cls.split(' ')[0] : ''));
+    }
+    return text(lines.join('\n'), { maxChars: 6000 });
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_ui_click",
+  {
+    title: "UI 精确点击（桌面端窗口）",
+    description:
+      "在桌面端窗口内精确点击：text=按按钮/链接的文本匹配（取第 index 个，默认 0），selector=按 CSS 选择器。" +
+      "先 dsh_desktop_ui_snapshot 看有哪些元素再点；点击后可用 ui_text/ui_capture 验证结果。",
+    inputSchema: z.object({
+      text: z.string().optional().describe("按文本匹配（aria-label/title/innerText 包含即命中）"),
+      selector: z.string().optional().describe("按 CSS 选择器（优先于 text）"),
+      index: z.number().optional().describe("第几个匹配（0 起，默认 0）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("uiClick", { text: args.text, selector: args.selector, index: args.index });
+    if (!result.ok) throw new Error(result.error || "点击失败");
+    if (result.error === 'not found') {
+      return text("未找到匹配元素（候选 " + (result.candidates || 0) + " 个）——先 dsh_desktop_ui_snapshot 确认元素的文本/位置。");
+    }
+    return text("已点击 <" + result.tag + ">" + (result.text ? " '" + result.text + "'" : ""));
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_ui_text",
+  {
+    title: "读取 UI 元素文本",
+    description: "读取桌面端窗口内某元素的文本内容（CSS 选择器）：用于验证点击结果/面板状态，比截图 OCR 可靠且零成本。",
+    inputSchema: z.object({
+      selector: z.string().describe("CSS 选择器（如 [data-dsh-desktop-env-panel]）"),
+      cap: z.number().optional().describe("截断上限（默认 4000 字）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("uiText", { selector: args.selector, cap: args.cap });
+    if (!result.ok) throw new Error(result.error || "读取失败");
+    if (result.error === 'selector not found') return text("选择器未找到元素：" + args.selector);
+    return text(result.text || "（空）");
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_ui_capture",
+  {
+    title: "截桌面端自己窗口的图",
+    description:
+      "截取桌面端窗口内容（capturePage，不受其他窗口叠放遮挡影响），保存到工作区附件目录并返回 PNG 路径。" +
+      "返回路径后配合 mcp__dsh_desktop__describe_image 用 question 定点看图（先全局后 region 放大）。",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const result = await call("uiCaptureSelf");
+    if (!result.ok) throw new Error(result.error || "截图失败");
+    return text("已保存：" + result.path + "\n尺寸：" + result.width + "×" + result.height + "\n可用 describe_image（path=" + result.path + "）按问题定点查看。");
+  },
+);
+
 // ---- 生命周期 ----
 const transport = new StdioServerTransport();
 try {

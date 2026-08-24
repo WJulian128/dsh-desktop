@@ -28,6 +28,7 @@ const { gitSummary, gitInit, gitHead, gitStatus, gitDiff, gitLog, gitCommit, git
 const githubOps = require('./github');
 const projectMap = require('./project-map');
 const workspaceGuard = require('./workspace-guard');
+const uiIntrospect = require('./ui-introspect');
 const { ensureNorms, NORM_VERSION } = require('./agents-norms');
 const ollama = require('./ollama');
 const winControl = require('./win-control');
@@ -1607,16 +1608,24 @@ function startRpc() {
   // region 坐标为物理像素（与保存的截图文件同一坐标系，如 1920×1080 全屏内取 0..1919/0..1079），
   // 越界部分自动裁剪到屏幕边界，实际裁剪结果随 result.crop 返回。
   rpc.on('computerScreenshot', async (params, io) => {
-    const display = screen.getPrimaryDisplay();
-    const sf = display.scaleFactor || 1;
     const region = params && params.region && typeof params.region === 'object' ? params.region : null;
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: { width: Math.round(display.bounds.width * sf), height: Math.round(display.bounds.height * sf) },
-    });
-    const source = sources.find((s) => s.display_id === String(display.id)) || sources[0];
-    if (!source) throw new Error('\u65e0\u6cd5\u83b7\u53d6\u5c4f\u5e55\u5185\u5bb9');
-    let img = source.thumbnail;
+    let img = null;
+    if (params && params.target === 'self') {
+      // 截桌面端自己窗口的内容（capturePage）：不受其他窗口叠放/遮挡影响——
+      // 屏幕截图在 ChatGPT 等全屏窗口与 DSH 重叠时会截错窗口
+      if (!mainWindow || mainWindow.isDestroyed()) throw new Error('桌面窗口不可用');
+      img = await mainWindow.webContents.capturePage();
+    } else {
+      const display = screen.getPrimaryDisplay();
+      const sf = display.scaleFactor || 1;
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: Math.round(display.bounds.width * sf), height: Math.round(display.bounds.height * sf) },
+      });
+      const source = sources.find((s) => s.display_id === String(display.id)) || sources[0];
+      if (!source) throw new Error('\u65e0\u6cd5\u83b7\u53d6\u5c4f\u5e55\u5185\u5bb9');
+      img = source.thumbnail;
+    }
     const fullSize = img.getSize();
     let crop = null;
     if (region) {
@@ -1682,6 +1691,43 @@ function startRpc() {
       }
     }
     return result;
+  });
+
+  /* ---- UI 内省（读自己窗口 DOM：结构化定位/精确点击/读文本，告别截图猜坐标） ---- */
+
+  async function evalInMainWindow(code) {
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents || mainWindow.webContents.isDestroyed()) {
+      throw new Error('\u684c\u9762\u7a97\u53e3\u4e0d\u53ef\u7528');
+    }
+    return await mainWindow.webContents.executeJavaScript(code, true);
+  }
+
+  rpc.on('uiSnapshot', async () => {
+    const raw = await evalInMainWindow(uiIntrospect.snapshotScript());
+    return { ok: true, ...uiIntrospect.normalizeSnapshot(raw) };
+  });
+
+  rpc.on('uiClick', async (params) => {
+    const result = await evalInMainWindow(uiIntrospect.clickScript(params || {}));
+    return { ok: true, ...(result && typeof result === 'object' ? result : {}) };
+  });
+
+  rpc.on('uiText', async (params) => {
+    const selector = String((params && params.selector) || '');
+    if (!selector) return { ok: false, error: 'selector \u5fc5\u586b' };
+    const result = await evalInMainWindow(uiIntrospect.textScript(selector, params && params.cap));
+    return { ok: true, ...(result && typeof result === 'object' ? result : {}) };
+  });
+
+  rpc.on('uiCaptureSelf', async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) throw new Error('\u684c\u9762\u7a97\u53e3\u4e0d\u53ef\u7528');
+    const cap = await mainWindow.webContents.capturePage();
+    const png = cap.toPNG();
+    const attachDir = path.join(state.workspace, '.dsh-attachments');
+    fs.mkdirSync(attachDir, { recursive: true });
+    const file = path.join(attachDir, 'ui-capture-' + Date.now() + '.png');
+    fs.writeFileSync(file, png);
+    return { ok: true, path: file, width: cap.getSize().width, height: cap.getSize().height };
   });
 
   /* ---- 定时任务 / 提醒（模型可自建） ---- */

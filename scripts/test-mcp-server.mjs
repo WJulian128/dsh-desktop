@@ -75,6 +75,10 @@ const rpc = createServer((req, res) => {
     if (payload.method === 'gitPull') return send(200, { ok: true, result: { ok: true, output: 'Already up to date.' } });
     if (payload.method === 'gitMerge') return send(200, { ok: true, result: { ok: true, output: 'Fast-forward' } });
     if (payload.method === 'gitRemoteList') return send(200, { ok: true, result: { ok: true, output: 'origin\thttps://github.com/o/r.git (fetch)' } });
+    if (payload.method === 'uiSnapshot') return send(200, { ok: true, result: { ok: true, url: 'http://x', title: 't', vw: 1280, vh: 800, dpr: 1, elements: [{ tag: 'button', text: '保存', id: '', cls: '', x: 10, y: 20, w: 80, h: 30 }] } });
+    if (payload.method === 'uiClick') return send(200, { ok: true, result: { ok: true, tag: 'button', text: '保存' } });
+    if (payload.method === 'uiText') return send(200, { ok: true, result: { ok: true, text: '面板文本' } });
+    if (payload.method === 'uiCaptureSelf') return send(200, { ok: true, result: { ok: true, path: 'C:\\ws\\.dsh-attachments\\ui-capture-1.png', width: 1280, height: 800 } });
     send(200, { ok: true, result: { echo: payload.method, params: payload.params } });
   });
 });
@@ -147,6 +151,10 @@ try {
   check('has dsh_desktop_git_pull', names.includes('dsh_desktop_git_pull'), '');
   check('has dsh_desktop_git_merge', names.includes('dsh_desktop_git_merge'), '');
   check('has dsh_desktop_github_set_visibility', names.includes('dsh_desktop_github_set_visibility'), '');
+  check('has dsh_desktop_ui_snapshot', names.includes('dsh_desktop_ui_snapshot'), '');
+  check('has dsh_desktop_ui_click', names.includes('dsh_desktop_ui_click'), '');
+  check('has dsh_desktop_ui_text', names.includes('dsh_desktop_ui_text'), '');
+  check('has dsh_desktop_ui_capture', names.includes('dsh_desktop_ui_capture'), '');
 
   const doctor = await client.callTool({ name: 'dsh_desktop_system_doctor', arguments: {} });
   const doctorText = (doctor.content || []).map((c) => c.text || '').join('\n');
