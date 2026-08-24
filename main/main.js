@@ -2222,6 +2222,15 @@ function registerDesktopFeatureIpc() {
     try { await shell.openExternal(url); return { ok: true }; } catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
   });
 
+  // 客户端诊断回报：面板实际收到的数据回传主进程日志（不存盘、不含敏感信息）
+  ipcMain.handle('dsh:client-debug', async (_event, payload) => {
+    try {
+      const safe = payload && typeof payload === 'object' ? payload : {};
+      logLine('[client-debug] ' + JSON.stringify(safe).slice(0, 400));
+      return { ok: true };
+    } catch { return { ok: false }; }
+  });
+
   let pendingDeviceFlow = null; // 设备码登录进行中（进程内）
 
   ipcMain.handle('dsh:github-login-start', async () => {

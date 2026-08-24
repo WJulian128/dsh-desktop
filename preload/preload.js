@@ -69,6 +69,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   githubRemoteSetup: (payload) => ipcRenderer.invoke('dsh:github-remote-setup', payload),
   githubSetVisibility: (payload) => ipcRenderer.invoke('dsh:github-visibility-set', payload),
   openExternal: (url) => ipcRenderer.invoke('dsh:open-external', { url }),
+  // 客户端诊断回报（面板实际收到的数据回传主进程日志，用于定位面板显示问题）
+  clientDebug: (payload) => ipcRenderer.invoke('dsh:client-debug', payload),
 
   // Ollama 本地视觉模型集成
   ollamaStatus: () => ipcRenderer.invoke('dsh:ollama-status'),

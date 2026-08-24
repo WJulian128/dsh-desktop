@@ -2081,7 +2081,24 @@ window.__ModuleLoader__.load({
         const refresh = (cheapOnly) => {
           if (!d) return;
           usageTick++;
-          if (d.gitSummary) d.gitSummary().then((r) => { if (!disposed) setGit(r); }).catch(() => {});
+          if (d.gitSummary) d.gitSummary().then((r) => {
+            if (disposed) return;
+            setGit(r);
+            // 诊断回报：把客户端实际收到的 git 载荷回传主进程日志（定位「非 Git 工作区」真因）
+            if (typeof d.clientDebug === 'function') {
+              try {
+                d.clientDebug({
+                  src: 'env-git',
+                  ok: !!(r && r.ok),
+                  notGit: !!(r && r.notGit),
+                  error: (r && r.error) || null,
+                  head: (r && r.output) ? String(r.output).split('\n').filter((l) => l.trim()).slice(0, 4).join(' | ').slice(0, 300) : '(空输出)',
+                }).catch(() => {});
+              } catch { /* 诊断失败不影响面板 */ }
+            }
+          }).catch((err) => {
+            if (!disposed) setGit({ ok: false, error: '客户端异常：' + ((err && err.message) || err) });
+          });
           // 项目代码地图 + 编辑占用（轻量查询，与 git 同频高频刷新 + 事件推送）
           if (d.projectMapStatus) d.projectMapStatus().then((r) => { if (!disposed && r && r.ok) setMap(r); }).catch(() => {});
           if (d.editStatus) d.editStatus().then((r) => { if (!disposed && r && r.ok) setClaims(r); }).catch(() => {});
@@ -2179,9 +2196,11 @@ window.__ModuleLoader__.load({
           git === null
             ? h('p', { key: 'g0', style: { ...st.hint, padding: '2px' } }, '读取中…')
             : !git.ok
-              ? h('p', { key: 'g0', style: { ...st.hint, padding: '2px' } }, /尚未选择工作区/.test(String(git.error || '')) ? '非 Git 工作区' : ('读取失败'))
+              ? h('p', { key: 'g0', style: { ...st.hint, padding: '2px' } },
+                /尚未选择工作区/.test(String(git.error || '')) ? '非 Git 工作区' : ('Git 读取失败：' + (git.error || '未知错误')))
               : gitInfo === null
-                ? h('p', { key: 'g0', style: { ...st.hint, padding: '2px' } }, '非 Git 工作区')
+                ? h('p', { key: 'g0', style: { ...st.hint, padding: '2px' } },
+                  'Git 解析失败：' + String(git.output || '').split('\n').filter((l) => l.trim()).slice(0, 3).join(' | ').slice(0, 120))
                 : h('div', { key: 'g', style: { display: 'flex', flexDirection: 'column' } },
                   envRow('分支', gitInfo.branch, 'br'),
                   envRow('领先/落后', gitInfo.ahead + ' / ' + gitInfo.behind, 'ab'),
