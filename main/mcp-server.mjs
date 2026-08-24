@@ -872,6 +872,10 @@ server.registerTool(
     }
     lines.push("当前分支：" + (result.branch || "?"));
     lines.push("远程 origin：" + (result.remote ? result.remote.split("\n")[0] : "未关联——登录后用 dsh_desktop_github_remote_setup 一键创建私有仓库并推送"));
+    if (result.visibility) {
+      lines.push("仓库可见性：" + (result.visibility === 'public' ? '完全公开（任何人可下载）' : (result.visibility === 'private' ? '私有' : result.visibility)) + " · " + (result.repoHtmlUrl || ""));
+      lines.push("切换可见性用 dsh_desktop_github_set_visibility（公开前确认无密钥/个人信息）。");
+    }
     return text(lines.join("\n"));
   },
 );
