@@ -1243,7 +1243,7 @@ window.__ModuleLoader__.load({
     function ScreenshotButton(props) {
       const disabled = !api() || !api().screenshot;
       const inputActions = (props && props.inputActions) || null;
-      const lastShot = react.useRef(null); // { path, imageIds } 待补救的截图
+      const pendingShots = react.useRef([]); // [{ path, imageIds }] 待补救的截图（支持多张）
       const descCache = react.useRef({}); // path -> { description, elapsedMs, model }（截图预识别结果）
       // 始终指向最新的 inputActions（每次渲染都是新对象，旧闭包里的是过期引用）
       const iaRef = react.useRef(inputActions);
@@ -1284,7 +1284,8 @@ window.__ModuleLoader__.load({
                   convService.releaseDraftImages(images);
                 } else {
                   // 记录待补救信息：纯文本模型发送时 harness 会拒绝图片，检测到后自动转本地识别
-                  lastShot.current = { path: payload.path || '', imageIds: images.map((it) => it.id) };
+                  // 多张截图依次入队，补救时全部处理，绝不漏图
+                  pendingShots.current.push({ path: payload.path || '', imageIds: images.map((it) => it.id) });
                 }
               })
               .catch(() => {
@@ -1296,23 +1297,18 @@ window.__ModuleLoader__.load({
         return off;
       }, [inputActions]);
 
-      // 截图发送被拒（纯文本模型不支持图片）→ 发送瞬间补救：删除图片草稿 → 用已缓存的
-      // 本地识别描述填入并自动重发。用 MutationObserver 监听"不支持图片"提示的【新增】——
-      // 历史残留提示不会触发（修复了截图后 1 秒图片被误删的问题：图片会一直显示到发送瞬间）。
+      // 截图发送被拒（纯文本模型不支持图片）→ 发送瞬间补救：删除图片草稿 → 逐张识别 →
+      // 汇总描述填入并自动重发。支持多张截图/附件：全部识别，绝不漏图。
+      // 用 MutationObserver 监听"不支持图片"提示的【新增】——历史残留提示不会触发。
       react.useEffect(() => {
-        if (!lastShot.current || !inputActions) return undefined;
+        if (!inputActions) return undefined;
         const d = api();
-        let disposed = false;
-        const doRescue = (shot) => {
-          lastShot.current = null;
-          if (shot.done) return; // 防重复（识别完成/超时后不再处理）
-          // 预识别结果直用：截图时主进程已并行识别，有缓存则零等待直接完成（无占位）
-          const cached = descCache.current[shot.path];
-          if (cached && cached.description) {
-            shot.desc = cached.description;
-            shot.elapsedMs = cached.elapsedMs;
-            shot.model = cached.model;
-          }
+        const doRescue = () => {
+          const shots = pendingShots.current.slice();
+          pendingShots.current = [];
+          if (!shots.length) return;
+          if (shots[0].done) return; // 防重复
+          shots.forEach((s) => { s.done = true; });
           // 先保存用户输入的话（补救不能把用户的话挤掉：用户原话在前，截图描述在后）
           let userText = '';
           try {
@@ -1321,22 +1317,48 @@ window.__ModuleLoader__.load({
             userText = String(v || '').trim();
           } catch { userText = ''; }
           try {
-            for (const id of shot.imageIds) { if (typeof inputActions.removeImage === 'function') inputActions.removeImage(id); }
+            for (const s of shots) {
+              for (const id of s.imageIds) { if (typeof inputActions.removeImage === 'function') inputActions.removeImage(id); }
+            }
           } catch { /* 忽略 */ }
-          // 兜底文案：原图永远保留在工作区 .dsh-attachments/，内容不丢——主模型可随时重新识别
-          const fallbackText = '\u3010\u622a\u56fe\u3011\u5df2\u4fdd\u5b58\u539f\u56fe\uff1a' + shot.path +
-            '\n\uff08\u8bc6\u522b\u5931\u8d25/\u8d85\u65f6\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u91cd\u65b0\u8bc6\u522b\uff0c\u6216\u7528 region \u5c40\u90e8\u653e\u5927\u67e5\u770b\u7ec6\u8282\uff09';
-          const doneText = '\u3010\u622a\u56fe\u3011\u5df2\u901a\u8fc7' + (shot.model ? ' ' + shot.model : '') + ' \u8bc6\u522b\uff08\u8017\u65f6 ' +
-            Math.round((shot.elapsedMs || 0) / 1000) + 's\uff09\uff1a\n' + (shot.desc || '') +
-            '\n\uff08\u539f\u56fe\u4fdd\u7559\u5728\uff1a' + shot.path + '\uff1b\u5982\u9700\u67e5\u770b\u5c40\u90e8\u7ec6\u8282\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u505a region \u653e\u5927\u8bc6\u522b\uff09';
-          const finish = (text) => {
+          // 逐张准备识别：缓存直用；否则现场启动 describeImagePath
+          for (const s of shots) {
+            const cached = descCache.current[s.path];
+            if (cached && cached.description) {
+              s.desc = cached.description;
+              s.elapsedMs = cached.elapsedMs;
+              s.model = cached.model;
+            }
+            if (!s.desc && !s.descPending && d && typeof d.describeImagePath === 'function') {
+              s.descPending = d.describeImagePath(s.path)
+                .then((r) => {
+                  s.desc = r && r.ok && typeof r.description === 'string' && r.description.trim() ? r.description.trim() : null;
+                  s.elapsedMs = r && r.elapsedMs;
+                  s.model = r && r.model;
+                })
+                .catch(() => { s.desc = null; });
+            }
+          }
+          const partOf = (s, i) => {
+            if (s.desc) {
+              const model = s.model ? ' ' + s.model : '';
+              const secs = s.elapsedMs ? Math.round(s.elapsedMs / 1000) + 's' : '';
+              return '\u3010\u622a\u56fe ' + (i + 1) + '\u3011\u5df2\u901a\u8fc7' + model + ' \u8bc6\u522b' + (secs ? '\uff08\u8017\u65f6 ' + secs + '\uff09' : '') + '\uff1a\n' + s.desc +
+                '\n\uff08\u539f\u56fe\u4fdd\u7559\u5728\uff1a' + s.path + '\uff1b\u5982\u9700\u67e5\u770b\u5c40\u90e8\u7ec6\u8282\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u505a region \u653e\u5927\u8bc6\u522b\uff09';
+            }
+            return '\u3010\u622a\u56fe ' + (i + 1) + '\u3011\u5df2\u4fdd\u5b58\u539f\u56fe\uff1a' + s.path +
+              '\n\uff08\u8bc6\u522b\u5931\u8d25/\u8d85\u65f6\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u91cd\u65b0\u8bc6\u522b\uff0c\u6216\u7528 region \u5c40\u90e8\u653e\u5927\u67e5\u770b\u7ec6\u8282\uff09';
+          };
+          let finished = false;
+          const finish = () => {
             // ⚠️ 不能用 disposed 守卫：inputActions 每次渲染都是新对象，effect 会随渲染
             // 重建并置 disposed=true——识别完成后自动发送会被静默掐掉（占位永远卡在输入框）。
-            // 幂等只靠 shot.done；取最新 inputActions，组件卸载后 submit 由 try/catch 兜底。
-            if (shot.done) return;
-            shot.done = true;
+            // 幂等只靠 finished；取最新 inputActions，组件卸载后 submit 由 try/catch 兜底。
+            if (finished) return;
+            finished = true;
+            const parts = shots.map(partOf);
+            const finalText = userText ? userText + '\n\n' + parts.join('\n\n') : parts.join('\n\n');
             const act = latestInputActions();
-            const finalText = userText ? userText + '\n\n' + text : text;
             if (act && typeof act.setDraft === 'function') {
               try { act.setDraft(finalText); } catch { /* 忽略 */ }
             }
@@ -1347,31 +1369,18 @@ window.__ModuleLoader__.load({
               } catch { /* 忽略 */ }
             }, 300);
           };
-          if (shot.desc) { finish(doneText); return; }
-          // 兜底：截图时的预识别可能因链路异常未启动——被拒的此刻当场启动识别，
-          // 绝不直接掉到降级文案（主模型拿不到描述才会"乱猜"）。
-          if (!shot.descPending && d && typeof d.describeImagePath === 'function') {
-            shot.descPending = d.describeImagePath(shot.path)
-              .then((r) => { shot.desc = r && r.ok ? r.description : null; shot.elapsedMs = r && r.elapsedMs; shot.model = r && r.model; })
-              .catch(() => { shot.desc = null; });
-            // 识别超时兜底（90s）：云端/本地推理最坏情况，超时用带原图路径的兜底文案，
-            // 绝不让"识别中"占位无限停留被误发。
-            const timeout = new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 90000));
-            const raced = Promise.race([shot.descPending, timeout]);
-            raced.then((r) => { if (r && r.timeout && !shot.done) { shot.desc = null; finish(fallbackText); } })
-              .catch(() => { if (!shot.done) { shot.desc = null; finish(fallbackText); } });
+          const pending = shots.filter((s) => s.descPending);
+          if (!pending.length) { finish(); return; }
+          // 识别进行中：占位明确提示"请勿手动发送"（全部完成后自动替换并发送）
+          const placeholder = '\u3010\u622a\u56fe\u3011\u89c6\u89c9\u8bc6\u522b\u4e2d\u2026\uff08\u5171 ' + shots.length +
+            ' \u5f20\uff0c\u5b8c\u6210\u540e\u81ea\u52a8\u53d1\u9001\uff0c\u8bf7\u52ff\u624b\u52a8\u53d1\u9001\uff09';
+          if (inputActions && typeof inputActions.setDraft === 'function') {
+            try { inputActions.setDraft(userText ? userText + '\n\n' + placeholder : placeholder); } catch { /* 忽略 */ }
           }
-          if (shot.descPending) {
-            // 识别进行中：占位明确提示"请勿手动发送"（完成后自动替换并发送，避免只发占位丢失内容）
-            if (inputActions && typeof inputActions.setDraft === 'function') {
-              try { inputActions.setDraft(userText ? userText + '\n\n\u3010\u622a\u56fe\u3011\u89c6\u89c9\u8bc6\u522b\u4e2d\u2026\uff08\u5b8c\u6210\u540e\u81ea\u52a8\u53d1\u9001\uff0c\u8bf7\u52ff\u624b\u52a8\u53d1\u9001\uff09' : '\u3010\u622a\u56fe\u3011\u89c6\u89c9\u8bc6\u522b\u4e2d\u2026\uff08\u5b8c\u6210\u540e\u81ea\u52a8\u53d1\u9001\uff0c\u8bf7\u52ff\u624b\u52a8\u53d1\u9001\uff09'); } catch { /* 忽略 */ }
-            }
-            shot.descPending.then(() => {
-              finish(shot.desc ? doneText : fallbackText);
-            }).catch(() => finish(fallbackText));
-          } else {
-            finish(fallbackText);
-          }
+          // 全部识别完成（或 90s 总超时）→ 汇总发送；失败/超时的图走原图引用兜底
+          const overallTimeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), 90000));
+          Promise.race([Promise.all(pending.map((p) => p.then(() => null).catch(() => null))), overallTimeout])
+            .then(() => finish());
         };
         let observer = null;
         try {
@@ -1380,8 +1389,7 @@ window.__ModuleLoader__.load({
               for (const node of m.addedNodes) {
                 const txt = node && node.nodeType === 3 ? node.textContent : (node && node.nodeType === 1 ? node.textContent : '');
                 if (txt && txt.includes('\u4e0d\u652f\u6301\u56fe\u7247')) {
-                  const shot = lastShot.current;
-                  if (shot) { doRescue(shot); }
+                  doRescue();
                   return;
                 }
               }
@@ -1390,13 +1398,12 @@ window.__ModuleLoader__.load({
           observer.observe(document.body, { childList: true, subtree: true, characterData: true });
         } catch { observer = null; }
         // 安全阀：120s 后清理（用户没发送则图片保持显示、识别结果丢弃）
-        const timeout = setTimeout(() => { lastShot.current = null; }, 120000);
+        const timeout = setTimeout(() => { pendingShots.current = []; }, 120000);
         return () => {
-          disposed = true;
           clearTimeout(timeout);
           if (observer) { try { observer.disconnect(); } catch { /* 忽略 */ } }
         };
-      }, [inputActions, lastShot.current]);
+      }, [inputActions]);
 
       return h('button', {
         type: 'button',

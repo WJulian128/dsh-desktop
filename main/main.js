@@ -3151,25 +3151,40 @@ function closeCaptureWindow() {
 
 /** 捕获全屏冻结画面并发送给选区窗口作背景（失败静默，提交时兜底现场捕获）。
  *  展示用画面降采样到 DIP 分辨率 JPEG（几十~几百 KB）：全尺寸 PNG base64 达数 MB，
- *  传输+解码要数秒——那段时间不透明窗口盖住全屏就表现为"黑屏"。裁剪仍用全尺寸原图。 */
+ *  传输+解码要数秒——那段时间不透明窗口盖住全屏就表现为"黑屏"。裁剪仍用全尺寸原图。
+ *  黑屏防护：Electron 偶发返回空 thumbnail（第二次截图尤其常见）→ 空则延时重试一次。 */
+async function captureSourceOnce() {
+  const display = screen.getPrimaryDisplay();
+  const sf = display.scaleFactor || 1;
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: Math.round(display.bounds.width * sf), height: Math.round(display.bounds.height * sf) },
+  });
+  return sources.find((s) => s.display_id === String(display.id)) || sources[0] || null;
+}
+
 async function startBackdropCapture() {
   try {
     const t0 = Date.now();
     const display = screen.getPrimaryDisplay();
-    const sf = display.scaleFactor || 1;
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: { width: Math.round(display.bounds.width * sf), height: Math.round(display.bounds.height * sf) },
-    });
-    const source = sources.find((s) => s.display_id === String(display.id)) || sources[0];
-    if (!source) throw new Error('\u65e0\u6cd5\u83b7\u53d6\u5c4f\u5e55\u5185\u5bb9');
+    let source = await captureSourceOnce();
+    if (!source || source.thumbnail.isEmpty()) {
+      await new Promise((r) => setTimeout(r, 400));
+      source = await captureSourceOnce();
+    }
+    if (!source || source.thumbnail.isEmpty()) throw new Error('\u5c4f\u5e55\u6355\u83b7\u4e3a\u7a7a\uff08\u91cd\u8bd5\u540e\u4ecd\u5931\u8d25\uff09');
     captureBackdrop = { img: source.thumbnail, at: Date.now() };
     logLine('[screenshot] \u80cc\u666f\u6355\u83b7 ' + (Date.now() - t0) + 'ms');
     // 展示降采样：宽度压到 DIP 宽度，JPEG 质量 80——传输/解码瞬间完成
-    const disp = source.thumbnail.resize({ width: Math.round(display.bounds.width), quality: 'good' });
-    const dataUrl = 'data:image/jpeg;base64,' + disp.toJPEG(80).toString('base64');
-    if (captureWindow && !captureWindow.isDestroyed()) {
-      captureWindow.webContents.send('dsh:capture-backdrop', { dataUrl });
+    try {
+      const disp = source.thumbnail.resize({ width: Math.round(display.bounds.width), quality: 'good' });
+      const dataUrl = 'data:image/jpeg;base64,' + disp.toJPEG(80).toString('base64');
+      if (captureWindow && !captureWindow.isDestroyed()) {
+        captureWindow.webContents.send('dsh:capture-backdrop', { dataUrl });
+      }
+    } catch (err) {
+      // 展示画面失败不影响功能：窗口保持提示，提交时现场捕获兜底
+      logLine('[screenshot] \u5c55\u793a\u753b\u9762\u751f\u6210\u5931\u8d25\uff08\u4e0d\u5f71\u54cd\u63d0\u4ea4\uff09\uff1a' + ((err && err.message) || err));
     }
   } catch (err) {
     logLine('[screenshot] \u80cc\u666f\u6355\u83b7\u5931\u8d25\uff1a' + ((err && err.message) || err));
