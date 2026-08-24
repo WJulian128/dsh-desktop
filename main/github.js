@@ -248,6 +248,7 @@ module.exports = {
   whoami,
   createRepo,
   renameRepo,
+  setRepoVisibility,
   searchCode,
   status,
   suggestRepoName,
