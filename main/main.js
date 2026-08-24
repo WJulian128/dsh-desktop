@@ -2579,14 +2579,45 @@ function registerDesktopFeatureIpc() {
 
   ipcMain.handle('dsh:screenshot', () => { openCaptureWindow(); return { ok: true }; });
 
+  // 截图预热：mousedown 时并行启动全屏捕获，mouseup 提交时大概率已就绪（消除松手后的 1-3s 等待）
+  let captureWarm = null; // { promise, at }
+
+  ipcMain.handle('dsh:capture-warmup', async () => {
+    try {
+      if (captureWarm && Date.now() - captureWarm.at < 5000) return { ok: true, cached: true };
+      const display = screen.getPrimaryDisplay();
+      const sf = display.scaleFactor || 1;
+      captureWarm = {
+        at: Date.now(),
+        promise: desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: Math.round(display.bounds.width * sf), height: Math.round(display.bounds.height * sf) },
+        }),
+      };
+      captureWarm.promise.catch(() => { captureWarm = null; }); // 失败自清，不阻塞
+      return { ok: true, cached: false };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    }
+  });
+
   ipcMain.handle('dsh:capture-region', async (_event, region) => {
+    const t0 = Date.now();
     try {
       const display = screen.getPrimaryDisplay();
       const sf = display.scaleFactor || 1;
-      const sources = await desktopCapturer.getSources({
-        types: ['screen'],
-        thumbnailSize: { width: Math.round(display.bounds.width * sf), height: Math.round(display.bounds.height * sf) },
-      });
+      // 优先用预热结果（鼠标拖动期间已并行捕获），过期/未就绪再现场捕获
+      let sources = null;
+      if (captureWarm && Date.now() - captureWarm.at < 5000) {
+        try { sources = await captureWarm.promise; } catch { sources = null; }
+      }
+      if (!sources) {
+        sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: Math.round(display.bounds.width * sf), height: Math.round(display.bounds.height * sf) },
+        });
+      }
+      captureWarm = null;
       const source = sources.find((s) => s.display_id === String(display.id)) || sources[0];
       if (!source) throw new Error('\u65e0\u6cd5\u83b7\u53d6\u5c4f\u5e55\u5185\u5bb9');
       const img = source.thumbnail.crop({
@@ -2594,6 +2625,7 @@ function registerDesktopFeatureIpc() {
         width: Math.round((region.width || 10) * sf), height: Math.round((region.height || 10) * sf),
       });
       const png = img.toPNG();
+      logLine('[screenshot] \u6355\u83b7+\u7f16\u7801 ' + (Date.now() - t0) + 'ms\uff08' + Math.round((region.width || 10) * sf) + 'x' + Math.round((region.height || 10) * sf) + '\uff09');
       clipboard.writeImage(nativeImage.createFromBuffer(png));
       // 持久保存到工作区附件目录（备用；agent 可按需用 dsh_desktop_describe_image 引用）
       let attachDir = path.join(state.workspace || os.tmpdir(), '.dsh-attachments');
@@ -3129,19 +3161,29 @@ function backupOptions(includeCredentials, includeSessions) {
 /* ---------- 截图 / 附件 / 新对话接续 ---------- */
 
 function closeCaptureWindow() {
-  if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close();
-  captureWindow = null;
+  // 隐藏而非销毁：透明窗口创建在软件渲染下很慢，复用消除再次点击截图按钮的等待
+  if (captureWindow && !captureWindow.isDestroyed()) {
+    try { captureWindow.hide(); } catch { /* 忽略 */ }
+  }
 }
 
-/** 全屏透明选区窗口（renderer/capture.html 里拖选区域）。 */
+/** 全屏透明选区窗口（renderer/capture.html 里拖选区域）。预创建 + 复用：显示时重新定位到当前主屏。 */
 function openCaptureWindow() {
-  if (captureWindow && !captureWindow.isDestroyed()) { captureWindow.focus(); return; }
+  if (captureWindow && !captureWindow.isDestroyed()) {
+    const display = screen.getPrimaryDisplay();
+    try { captureWindow.setBounds(display.bounds); } catch { /* 忽略 */ }
+    captureWindow.setAlwaysOnTop(true, 'screen-saver');
+    captureWindow.show();
+    captureWindow.focus();
+    return;
+  }
   const display = screen.getPrimaryDisplay();
   const { x, y, width, height } = display.bounds;
   captureWindow = new BrowserWindow({
     x, y, width, height,
     frame: false, transparent: true, resizable: false, movable: false,
     fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, hasShadow: false,
+    show: false, // 预创建时隐藏；openCaptureWindow 显示
     icon: WINDOW_ICON,
     webPreferences: {
       preload: path.join(APP_DIR, 'preload', 'preload.js'),
@@ -3151,6 +3193,38 @@ function openCaptureWindow() {
   captureWindow.setAlwaysOnTop(true, 'screen-saver');
   captureWindow.on('closed', () => { captureWindow = null; });
   captureWindow.loadFile(path.join(APP_DIR, 'renderer', 'capture.html'));
+  captureWindow.once('ready-to-show', () => {
+    // 首次打开（预创建后）：加载完成再显示，避免白屏闪烁
+    if (captureWindow && !captureWindow.isDestroyed()) {
+      try { captureWindow.show(); } catch { /* 忽略 */ }
+      try { captureWindow.focus(); } catch { /* 忽略 */ }
+    }
+  });
+}
+
+/** 应用启动时预创建截图选区窗口（隐藏），首次点击截图按钮零创建延迟。 */
+function precreateCaptureWindow() {
+  try {
+    if (captureWindow && !captureWindow.isDestroyed()) return;
+    const display = screen.getPrimaryDisplay();
+    const { x, y, width, height } = display.bounds;
+    captureWindow = new BrowserWindow({
+      x, y, width, height,
+      frame: false, transparent: true, resizable: false, movable: false,
+      fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, hasShadow: false,
+      show: false,
+      icon: WINDOW_ICON,
+      webPreferences: {
+        preload: path.join(APP_DIR, 'preload', 'preload.js'),
+        contextIsolation: true, nodeIntegration: false, sandbox: true,
+      },
+    });
+    captureWindow.setAlwaysOnTop(true, 'screen-saver');
+    captureWindow.on('closed', () => { captureWindow = null; });
+    captureWindow.loadFile(path.join(APP_DIR, 'renderer', 'capture.html'));
+  } catch (err) {
+    logLine('[screenshot] 预创建选区窗口失败（忽略）：' + ((err && err.message) || String(err)));
+  }
 }
 
 /** 聚焦主窗口输入框并向页面发送 Ctrl+V（把剪贴板内容贴进对话框）。返回是否找到输入框。 */
@@ -4277,6 +4351,8 @@ async function main() {
   } catch { /* JumpList 失败不影响运行 */ }
 
   mainWindow = createMainWindow();
+  // 预创建截图选区窗口（隐藏）：首次点击截图按钮零创建延迟（透明窗在软件渲染下创建很慢）
+  precreateCaptureWindow();
 
   if (!state.workspace || !fs.existsSync(state.workspace)) {
     const dir = await chooseWorkspaceDialog();

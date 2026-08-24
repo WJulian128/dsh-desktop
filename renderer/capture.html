@@ -37,6 +37,8 @@
 
     document.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
+      // 预热：拖选期间主进程并行捕获全屏，松手提交时零等待
+      if (d && d.captureWarmup) { try { d.captureWarmup(); } catch { /* 忽略 */ } }
       start = { x: e.clientX, y: e.clientY };
       rect.style.display = 'block';
       sizeEl.style.display = 'block';
