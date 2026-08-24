@@ -3182,11 +3182,13 @@ function openCaptureWindow() {
     const display = screen.getPrimaryDisplay();
     try { captureWindow.setBounds(display.bounds); } catch { /* 忽略 */ }
     captureWindow.setAlwaysOnTop(true, 'screen-saver');
-    // 显示前先清掉上一次的冻结画面（同步 executeJavaScript，绝不闪旧图）
+    // 显示前先清掉上一次的冻结画面与蓝色选框（同步 executeJavaScript，绝不闪旧图/旧框）
     try {
       captureWindow.webContents.executeJavaScript(
         "(() => { var s = document.getElementById('stage'); if (s) s.style.backgroundImage = 'none'; " +
-        "var h = document.getElementById('hint'); if (h) h.textContent = '正在捕获屏幕…'; return true; })()",
+        "var h = document.getElementById('hint'); if (h) h.textContent = '正在捕获屏幕…'; " +
+        "var r = document.getElementById('rect'); if (r) r.style.display = 'none'; " +
+        "var z = document.getElementById('size'); if (z) z.style.display = 'none'; return true; })()",
       );
     } catch { /* 页面未就绪则靠页面自身重置 */ }
     captureWindow.show();

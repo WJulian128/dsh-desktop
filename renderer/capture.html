@@ -48,16 +48,23 @@
       stage.style.backgroundImage = 'url("' + dataUrl + '")';
       hintEl.textContent = '拖动框选截图区域，松开完成 · Esc 取消';
     }
-    function resetBackdrop() {
+    function resetAll() {
       stage.style.backgroundImage = 'none';
       hintEl.textContent = '正在捕获屏幕…';
+      rect.style.display = 'none';
+      sizeEl.style.display = 'none';
+      start = null;
     }
 
-    // 冻结画面到达（主进程捕获完成后推送）；每次打开窗口先重置，避免显示上一次的旧画面
+    // 冻结画面到达（主进程捕获完成后推送）
     if (d) {
       if (typeof d.onCaptureBackdrop === 'function') d.onCaptureBackdrop((ev) => { if (ev && ev.dataUrl) setBackdrop(ev.dataUrl); });
-      if (typeof d.onCaptureReset === 'function') d.onCaptureReset(() => resetBackdrop());
+      if (typeof d.onCaptureReset === 'function') d.onCaptureReset(() => resetAll());
     }
+    // 窗口每次隐藏时自清（含蓝色选框），下次打开绝不残留上一次的框选痕迹
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') resetAll();
+    });
 
     document.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;

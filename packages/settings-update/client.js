@@ -1245,6 +1245,10 @@ window.__ModuleLoader__.load({
       const inputActions = (props && props.inputActions) || null;
       const lastShot = react.useRef(null); // { path, imageIds } 待补救的截图
       const descCache = react.useRef({}); // path -> { description, elapsedMs, model }（截图预识别结果）
+      // 始终指向最新的 inputActions（每次渲染都是新对象，旧闭包里的是过期引用）
+      const iaRef = react.useRef(inputActions);
+      iaRef.current = inputActions;
+      const latestInputActions = () => iaRef.current || inputActions;
 
       // 预识别结果缓存：主进程在截图时已开始识别，完成后推送到这里；
       // 发送被拒的补救流程直用（零等待，无"识别中"占位被误发的风险）。
@@ -1326,11 +1330,22 @@ window.__ModuleLoader__.load({
             Math.round((shot.elapsedMs || 0) / 1000) + 's\uff09\uff1a\n' + (shot.desc || '') +
             '\n\uff08\u539f\u56fe\u4fdd\u7559\u5728\uff1a' + shot.path + '\uff1b\u5982\u9700\u67e5\u770b\u5c40\u90e8\u7ec6\u8282\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u505a region \u653e\u5927\u8bc6\u522b\uff09';
           const finish = (text) => {
-            if (disposed || shot.done) return;
+            // ⚠️ 不能用 disposed 守卫：inputActions 每次渲染都是新对象，effect 会随渲染
+            // 重建并置 disposed=true——识别完成后自动发送会被静默掐掉（占位永远卡在输入框）。
+            // 幂等只靠 shot.done；取最新 inputActions，组件卸载后 submit 由 try/catch 兜底。
+            if (shot.done) return;
             shot.done = true;
+            const act = latestInputActions();
             const finalText = userText ? userText + '\n\n' + text : text;
-            if (inputActions && typeof inputActions.setDraft === 'function') inputActions.setDraft(finalText);
-            setTimeout(() => { try { if (!disposed && inputActions && typeof inputActions.submit === 'function') inputActions.submit(); } catch { /* 忽略 */ } }, 300);
+            if (act && typeof act.setDraft === 'function') {
+              try { act.setDraft(finalText); } catch { /* 忽略 */ }
+            }
+            setTimeout(() => {
+              try {
+                const actNow = latestInputActions();
+                if (actNow && typeof actNow.submit === 'function') actNow.submit();
+              } catch { /* 忽略 */ }
+            }, 300);
           };
           if (shot.desc) { finish(doneText); return; }
           // 兜底：截图时的预识别可能因链路异常未启动——被拒的此刻当场启动识别，
