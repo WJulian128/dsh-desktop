@@ -1303,12 +1303,17 @@ window.__ModuleLoader__.load({
       react.useEffect(() => {
         if (!inputActions) return undefined;
         const d = api();
+        const debug = (step, val) => {
+          if (!d || typeof d.clientDebug !== 'function') return;
+          try { d.clientDebug({ src: 'rescue', step, val }); } catch { /* 忽略 */ }
+        };
         const doRescue = () => {
           const shots = pendingShots.current.slice();
           pendingShots.current = [];
           if (!shots.length) return;
           if (shots[0].done) return; // 防重复
           shots.forEach((s) => { s.done = true; });
+          debug('start', { n: shots.length });
           // 先保存用户输入的话（补救不能把用户的话挤掉：用户原话在前，截图描述在后）
           let userText = '';
           try {
@@ -1322,7 +1327,8 @@ window.__ModuleLoader__.load({
             }
           } catch { /* 忽略 */ }
           // 逐张准备识别：缓存直用；否则现场启动 describeImagePath
-          for (const s of shots) {
+          for (let i = 0; i < shots.length; i++) {
+            const s = shots[i];
             const cached = descCache.current[s.path];
             if (cached && cached.description) {
               s.desc = cached.description;
@@ -1335,8 +1341,9 @@ window.__ModuleLoader__.load({
                   s.desc = r && r.ok && typeof r.description === 'string' && r.description.trim() ? r.description.trim() : null;
                   s.elapsedMs = r && r.elapsedMs;
                   s.model = r && r.model;
+                  debug('shot-done', { i: i + 1, descLen: s.desc ? s.desc.length : 0 });
                 })
-                .catch(() => { s.desc = null; });
+                .catch((err) => { s.desc = null; debug('shot-error', { i: i + 1, err: String((err && err.message) || err).slice(0, 80) }); });
             }
           }
           const partOf = (s, i) => {
@@ -1353,21 +1360,43 @@ window.__ModuleLoader__.load({
           const finish = () => {
             // ⚠️ 不能用 disposed 守卫：inputActions 每次渲染都是新对象，effect 会随渲染
             // 重建并置 disposed=true——识别完成后自动发送会被静默掐掉（占位永远卡在输入框）。
-            // 幂等只靠 finished；取最新 inputActions，组件卸载后 submit 由 try/catch 兜底。
+            // 幂等只靠 finished；取最新 inputActions；setDraft/submit 各带重试与日志。
             if (finished) return;
             finished = true;
             const parts = shots.map(partOf);
             const finalText = userText ? userText + '\n\n' + parts.join('\n\n') : parts.join('\n\n');
-            const act = latestInputActions();
-            if (act && typeof act.setDraft === 'function') {
-              try { act.setDraft(finalText); } catch { /* 忽略 */ }
-            }
-            setTimeout(() => {
+            const mark = finalText.slice(0, 30);
+            const ensureDraftAndSubmit = (attempt) => {
+              const actNow = latestInputActions();
+              // setDraft 是异步 React 状态：先核对草稿是否已是最终文本，缺了就重设
+              let cur = '';
               try {
-                const actNow = latestInputActions();
-                if (actNow && typeof actNow.submit === 'function') actNow.submit();
-              } catch { /* 忽略 */ }
-            }, 300);
+                const el2 = document.querySelector('textarea[data-phase]');
+                cur = el2 ? String(el2.value !== undefined ? el2.value : (el2.textContent || '')).trim() : '';
+              } catch { cur = ''; }
+              if (cur.indexOf(mark) === -1 && actNow && typeof actNow.setDraft === 'function') {
+                try { actNow.setDraft(finalText); debug('redraft', attempt); } catch (err) { debug('setdraft-error', String((err && err.message) || err).slice(0, 80)); }
+              }
+              setTimeout(() => {
+                const actNow2 = latestInputActions();
+                if (actNow2 && typeof actNow2.submit === 'function') {
+                  try { actNow2.submit(); debug('submit', attempt); } catch (err) { debug('submit-error', String((err && err.message) || err).slice(0, 80)); }
+                } else {
+                  debug('submit-noop', attempt);
+                }
+              }, 250);
+            };
+            setTimeout(() => ensureDraftAndSubmit(1), 300);
+            // 复核：提交后草稿应清空；若最终文本还在（submit 被吞）→ 再补一轮
+            setTimeout(() => {
+              let v2 = '';
+              try {
+                const el3 = document.querySelector('textarea[data-phase]');
+                v2 = el3 ? String(el3.value !== undefined ? el3.value : (el3.textContent || '')).trim() : '';
+              } catch { v2 = ''; }
+              if (v2 && v2.indexOf(mark) !== -1) ensureDraftAndSubmit(2);
+              else debug('draft-cleared', '');
+            }, 2500);
           };
           const pending = shots.filter((s) => s.descPending);
           if (!pending.length) { finish(); return; }
@@ -1380,7 +1409,7 @@ window.__ModuleLoader__.load({
           // 全部识别完成（或 90s 总超时）→ 汇总发送；失败/超时的图走原图引用兜底
           const overallTimeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), 90000));
           Promise.race([Promise.all(pending.map((p) => p.then(() => null).catch(() => null))), overallTimeout])
-            .then(() => finish());
+            .then(() => { debug('all-done', ''); finish(); });
         };
         let observer = null;
         try {
