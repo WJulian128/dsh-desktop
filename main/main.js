@@ -123,6 +123,65 @@ function ensureSubagentWorker() {
   return worker;
 }
 
+// 面板流 worker：子代理流读取（list/since）与 transcript 内容检查（contains）全部
+// 在 worker 线程内做——冷启动全量解压几十个子代理会话文件/数十 MB JSON 绝不碰主线程，
+// 消除"打开桌面端卡一下"的主线程阻塞源。缓存常驻 worker，跨请求复用。
+let panelStreamWorker = null;
+let panelStreamRequestId = 0;
+const panelStreamPending = new Map();
+
+function ensurePanelStreamWorker() {
+  if (panelStreamWorker) return panelStreamWorker;
+  const worker = new Worker(path.join(__dirname, 'panel-stream-worker.js'));
+  worker.on('message', (message) => {
+    if (!message || typeof message.requestId !== 'number') return;
+    const pending = panelStreamPending.get(message.requestId);
+    if (!pending) return;
+    panelStreamPending.delete(message.requestId);
+    if (message.error) pending.reject(new Error(message.error));
+    else pending.resolve(message.result);
+  });
+  worker.on('error', (error) => {
+    for (const pending of panelStreamPending.values()) pending.reject(error);
+    panelStreamPending.clear();
+    panelStreamWorker = null;
+  });
+  worker.on('exit', (code) => {
+    if (panelStreamWorker === worker) panelStreamWorker = null;
+    if (panelStreamPending.size > 0) {
+      const error = new Error('panel stream worker exited with code ' + code);
+      for (const pending of panelStreamPending.values()) pending.reject(error);
+      panelStreamPending.clear();
+    }
+  });
+  panelStreamWorker = worker;
+  return worker;
+}
+
+/** 向面板流 worker 派发任务（Promise 化）。 */
+function panelStreamTask(task, payload = {}) {
+  return new Promise((resolve, reject) => {
+    try {
+      const worker = ensurePanelStreamWorker();
+      const requestId = ++panelStreamRequestId;
+      panelStreamPending.set(requestId, { resolve, reject });
+      worker.postMessage({ requestId, task, ...payload });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+/** 会话 transcript 内容检查（异步，worker 内执行；主线程不碰解压）。 */
+function sessionContainsTextAsync(mark, opts = {}) {
+  return panelStreamTask('contains', {
+    dshHome: state.dshHome,
+    workspace: state.workspace,
+    mark,
+    full: opts.full === true,
+  }).catch(() => false);
+}
+
 let systemNodeForSubagentScan;
 
 function resolveSystemNodeForSubagentScan() {
@@ -2734,21 +2793,17 @@ function registerProvidersIpc() {
     return { ok: true };
   });
 
-  // 子代理会话流（stream 读取）：委托给 main/subagent-stream.js（另一子代理实现的模块，
-  // 导出 { listSubagentStream, streamSince }）。模块未就绪时返回占位错误，不阻塞设置页。
+  // 子代理会话流（stream 读取）：委托给 panel-stream-worker（worker 线程内解压，
+  // 冷启动全量扫描不阻塞 Electron 主进程——启动卡顿治理）。worker 未就绪时返回空列表。
   ipcMain.handle('dsh:subagent-stream-list', async () => {
     try {
-      const s = require('./subagent-stream');
-      if (!s || typeof s.listSubagentStream !== 'function') return { ok: false, error: '模块未就绪' };
-      // 模块签名：listSubagentStream({ dshHome, workspace, now }) —— 必须传参，否则路径为空返回空列表
-      const result = await s.listSubagentStream({ dshHome: state.dshHome, workspace: state.workspace });
+      const result = await panelStreamTask('list', { dshHome: state.dshHome, workspace: state.workspace });
       // 模块返回数组（非 { items }）；兼容两种形态；client 契约 { ok, items, summary }
       const list = Array.isArray(result) ? result : ((result && result.items) || []);
-      const wrapped = { ok: true, items: list, summary: null };
-      return wrapped;
+      return { ok: true, items: list, summary: null };
     } catch (err) {
       logLine('[subagent-stream] list 调用失败：' + ((err && err.message) || err));
-      return { ok: false, error: '模块未就绪' };
+      return { ok: true, items: [], summary: null };
     }
   });
 
@@ -2756,14 +2811,11 @@ function registerProvidersIpc() {
     const sessionId = String((payload && payload.sessionId) || '');
     const sinceSeq = Number((payload && payload.sinceSeq) || 0);
     try {
-      const s = require('./subagent-stream');
-      if (!s || typeof s.streamSince !== 'function') return { ok: false, error: '模块未就绪' };
-      // 模块签名：streamSince({ dshHome, workspace, sessionId, sinceSeq })，返回 { ok, seq, ... }
-      const result = await s.streamSince({ dshHome: state.dshHome, workspace: state.workspace, sessionId, sinceSeq });
+      const result = await panelStreamTask('since', { dshHome: state.dshHome, workspace: state.workspace, sessionId, sinceSeq });
       return result && typeof result === 'object' ? { ok: true, ...result } : { ok: true, data: result };
     } catch (err) {
       logLine('[subagent-stream] since 调用失败：' + ((err && err.message) || err));
-      return { ok: false, error: '模块未就绪' };
+      return { ok: false, error: 'worker 未就绪' };
     }
   });
 }
@@ -2880,87 +2932,15 @@ function sessionRecentlyActive(windowMs) {
   } catch { return false; }
 }
 
-/** 检查最新会话 transcript 的用户消息/inbox 中是否包含指定文本（验证接续任务确实进入对话流）。
- *  只查 user/message 与 agent/inbox/spliced 的内容——绝不能匹配 tool/call 参数里的同文本
- *  （restartApp 的 task 参数本身就会出现在工具调用记录里，会误判"已在队列"）。
- *  @param {{full?: boolean}} opts full=true 时对 ≤16MB 的会话文件做全量解压扫描（用于跨重启
- *  去重——历史注入的消息可能落在文件深处，尾帧检查会漏判导致重复注入）；默认仍走尾帧快检。 */
-function sessionContainsText(mark, { full = false } = {}) {
-  try {
-    const root = path.join(state.dshHome, 'sessions', workspaceSessionKey(state.workspace));
-    if (!fs.existsSync(root)) return false;
-    let best = null;
-    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const file = path.join(root, entry.name, 'session.jsonl.zstd');
-      let m = 0;
-      try { m = fs.statSync(file).mtimeMs; } catch { continue; }
-      if (!best || m > best.mtimeMs) best = { file, mtimeMs: m };
-    }
-    if (!best) return false;
-    // 性能：超大会话文件（压缩后 >2MB，解压可达数十 MB JSON）不整体解压——
-    // 改用尾帧精确检查：zstd 帧自包含、每条 JSONL 记录一个帧，接续消息（注入）必然
-    // 落在文件尾部几个帧内；只解压尾部 96KB 内的最后 8 帧并逐条解析类型，
-    // 既避免启动期全量解压阻塞主进程（启动卡顿），又不牺牲防重复注入的正确性。
-    try {
-      if (fs.statSync(best.file).size > (full ? 16 * 1024 * 1024 : 2 * 1024 * 1024)) {
-        return tailFramesContainsMark(best.file, mark);
-      }
-    } catch { return false; }
-    const text = decompressFrames(fs.readFileSync(best.file));
-    for (const rawLine of text.split('\n')) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      let r;
-      try { r = JSON.parse(line); } catch { continue; }
-      if (!r || !r.data) continue;
-      if (r.type === 'user/message') {
-        if (JSON.stringify(r.data.content || r.data.message || '').includes(mark)) return true;
-      } else if (r.type === 'agent/inbox/spliced') {
-        const inserted = r.data.inserted;
-        if (Array.isArray(inserted) && JSON.stringify(inserted).includes(mark)) return true;
-      }
-    }
-    return false;
-  } catch { return false; }
-}
+/** 会话 transcript 内容检查已迁移到 main/transcript-check.js 并 worker 化：
+ *  主线程统一走 sessionContainsTextAsync()（panel-stream worker 执行），
+ *  避免启动/接续流程在 Electron 主线程全量解压数十 MB JSON 造成卡顿。 */
 
-/** 尾帧精确检查：只解压文件尾部 tailBytes 内的最后 maxFrames 个 zstd 帧，
- *  逐条解析 user/message 与 agent/inbox/spliced 是否包含 mark（与全量检查同语义）。 */
-function tailFramesContainsMark(file, mark, tailBytes = 256 * 1024, maxFrames = 24) {
-  try {
-    const st = fs.statSync(file);
-    const start = Math.max(0, st.size - tailBytes);
-    const buf = Buffer.alloc(st.size - start);
-    const fd = fs.openSync(file, 'r');
-    try { fs.readSync(fd, buf, 0, buf.length, start); } finally { fs.closeSync(fd); }
-    const magic = [0x28, 0xb5, 0x2f, 0xfd];
-    const positions = [];
-    for (let i = buf.length - 4; i >= 0; i--) {
-      if (buf[i] === magic[0] && buf[i + 1] === magic[1] && buf[i + 2] === magic[2] && buf[i + 3] === magic[3]) {
-        positions.push(i);
-        if (positions.length >= maxFrames) break;
-      }
-    }
-    for (const pos of positions) {
-      try {
-        const out = zlib.zstdDecompressSync(buf.subarray(pos)).toString('utf8');
-        const r = JSON.parse(out);
-        if (!r || !r.data) continue;
-        if (r.type === 'user/message') {
-          if (JSON.stringify(r.data.content || r.data.message || '').includes(mark)) return true;
-        } else if (r.type === 'agent/inbox/spliced') {
-          const inserted = r.data.inserted;
-          if (Array.isArray(inserted) && JSON.stringify(inserted).includes(mark)) return true;
-        }
-      } catch { /* 尾部可能含未写完的帧，跳过 */ }
-    }
-    return false;
-  } catch { return false; }
-}
-
-/** 单次注入并发送。返回是否真正发送成功（输入框已清空）；页面未就绪/输入框不存在/输入框
- *  readOnly（harness 恢复期 machineBusy）时返回 false（由调用方轮询重试）。
+/** 单次注入并发送。返回是否真正发送成功——权威判据是消息文本已出现在最新会话
+ *  transcript（user/message 或 inbox）里：输入框清空不能作为成功证据（粘贴静默失败时
+ *  输入框本来就是空的，旧逻辑会误判成功、任务永远没发出去）。
+ *  页面未就绪/输入框不存在/输入框 readOnly（harness 恢复期 machineBusy）时返回 false
+ *  （由调用方轮询重试）。
  *  关键：对话输入框的唯一标识是 textarea[data-phase]（官方 InputBar）；恢复期它 readOnly，
  *  Enter 与粘贴都会被静默拒绝——通用选择器会命中页面上其它隐藏输入控件导致误判。 */
 async function injectAndSendOnce(text) {
@@ -2972,11 +2952,20 @@ async function injectAndSendOnce(text) {
     "if (!el) return { found: false }; " +
     (mode === 'read'
       ? "const v = el.value !== undefined ? el.value : (el.textContent || ''); return { found: true, draft: String(v), readOnly: !!(el.readOnly || el.disabled) };"
-      : mode === 'empty'
-        ? "const v = el.value !== undefined ? el.value : (el.textContent || ''); return { found: true, empty: String(v).trim().length === 0, readOnly: !!(el.readOnly || el.disabled) };"
-        : "el.focus(); return { found: true, readOnly: !!(el.readOnly || el.disabled) };") +
+      : "el.focus(); return { found: true, readOnly: !!(el.readOnly || el.disabled) };") +
     " })()",
   );
+  // 去前缀后的唯一部分：模板前缀固定，前 30 字会命中无关历史文本
+  const RESUME_PREFIX = '\u7ee7\u7eed\u5b8c\u6210\u672a\u5b8c\u6210\u7684\u4efb\u52a1\uff08\u684c\u9762\u7aef\u5df2\u91cd\u542f\uff09\uff1a';
+  const uniquePart = String(text).startsWith(RESUME_PREFIX)
+    ? String(text).slice(RESUME_PREFIX.length).trim()
+    : String(text);
+  const mark = uniquePart.slice(0, 40);
+  // 防重复：重试前先确认消息确实还没进会话（全量查一次，跨轮重试幂等）
+  try {
+    if (mark && await sessionContainsTextAsync(mark, { full: true })) return true;
+  } catch { /* 检查失败继续尝试 */ }
+
   const st = await readEditor('read');
   if (!st || !st.found) return false;
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -2985,11 +2974,7 @@ async function injectAndSendOnce(text) {
   // 输入框 readOnly（恢复期 busy）：不粘贴不按键，让外圈重试等待恢复。
   if (st.readOnly) return false;
   // 上次尝试的文字仍停在输入框 → 只按 Enter，不再重复粘贴（避免闪烁与重复）。
-  // 匹配用去前缀后的唯一部分：模板前缀固定，前 30 字会命中无关历史文本。
-  const uniquePart = String(text).startsWith('\u7ee7\u7eed\u5b8c\u6210\u672a\u5b8c\u6210\u7684\u4efb\u52a1\uff08\u684c\u9762\u7aef\u5df2\u91cd\u542f\uff09\uff1a')
-    ? String(text).slice('\u7ee7\u7eed\u5b8c\u6210\u672a\u5b8c\u6210\u7684\u4efb\u52a1\uff08\u684c\u9762\u7aef\u5df2\u91cd\u542f\uff09\uff1a'.length).trim()
-    : String(text);
-  const alreadyThere = uniquePart && String(st.draft || '').includes(uniquePart.slice(0, 40));
+  const alreadyThere = !!(mark && String(st.draft || '').includes(mark));
   const userDraft = alreadyThere ? '' : String(st.draft || '').trim().slice(0, 8000);
   // 1) 用户草稿暂存并清空（Ctrl+A + Delete），保证接续任务在前。
   if (userDraft) {
@@ -3001,36 +2986,57 @@ async function injectAndSendOnce(text) {
     mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Delete' });
     await new Promise((r) => setTimeout(r, 200));
   }
-  // 2) 注入接续任务（普通 Enter：保证消息进入队列/新回合，绝不丢失——
-  //    Ctrl+Enter 的 steer 在部分状态下会被 harness 静默丢弃）。
+  // 2) 注入接续任务，并验证粘贴确实进入了输入框——静默粘贴失败时必须返回 false
+  //    让外圈重试，绝不能拿"输入框本来就空"当成功。
   if (!alreadyThere) {
     clipboard.writeText(String(text));
     await readEditor('focus');
-    mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
-    mainWindow.webContents.sendInputEvent({ type: 'char', keyCode: 'v', modifiers: ['control'] });
-    mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] });
-    await new Promise((r) => setTimeout(r, 400)); // 等 React 收到粘贴内容
+    let pasted = false;
+    for (let attempt = 0; attempt < 3 && !pasted; attempt++) {
+      mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
+      mainWindow.webContents.sendInputEvent({ type: 'char', keyCode: 'v', modifiers: ['control'] });
+      mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] });
+      await new Promise((r) => setTimeout(r, 400)); // 等 React 收到粘贴内容
+      try {
+        const chk = await readEditor('read');
+        pasted = !!(chk && chk.found && mark && String(chk.draft || '').includes(mark));
+      } catch { /* 页面未就绪 */ }
+    }
+    if (!pasted) {
+      logLine('[auto-resume] \u7c98\u8d34\u672a\u8fdb\u5165\u8f93\u5165\u6846\uff0c\u7b49\u5f85\u91cd\u8bd5');
+      return false;
+    }
   } else {
     await readEditor('focus');
   }
+  // 3) 发送（普通 Enter：保证消息进入队列/新回合，绝不丢失——Ctrl+Enter 的 steer 在
+  //    部分状态下会被 harness 静默丢弃）。
   const busy = sessionIsBusy();
-  mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
-  mainWindow.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
-  mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
-  // 发送确认：轮询输入框是否已清空；readOnly 期间只等待不按键（~24s 窗口覆盖恢复期）。
-  let confirmed = false;
-  for (let attempt = 0; attempt < 24; attempt++) {
-    await new Promise((r) => setTimeout(r, 1000));
-    let st2 = { empty: false, readOnly: false };
-    try { st2 = await readEditor('empty'); } catch { /* 保持默认 */ }
-    if (st2.empty) { confirmed = true; break; }
-    if (st2.readOnly) continue; // 恢复期：等待而非硬按
+  const pressEnter = () => {
     mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
     mainWindow.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
     mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
+  };
+  pressEnter();
+  // 4) 权威确认：消息文本必须真正进入最新会话 transcript（user/message 或 inbox）。
+  //    轮询最多 ~20s；readOnly 恢复期只等待不硬按。
+  let confirmed = false;
+  const confirmDeadline = Date.now() + 20000;
+  while (Date.now() < confirmDeadline) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      if (mark && await sessionContainsTextAsync(mark)) { confirmed = true; break; }
+    } catch { /* 检查失败继续等 */ }
+    let st2 = { readOnly: false };
+    try { st2 = await readEditor('read'); } catch { /* 保持默认 */ }
+    if (st2.readOnly) continue; // 恢复期：等待而非硬按
+    const draftLeft = st2 && st2.draft ? String(st2.draft).trim() : '';
+    if (draftLeft) {
+      // 文字还停在输入框 → 再次 Enter（可能上一发被页面事件吞掉）
+      pressEnter();
+    }
   }
-  if (!confirmed) confirmed = sessionContainsText(String(text).slice(0, 20)); // 输入框外兜底判定
-  if (!confirmed) logLine('[auto-resume] \u53d1\u9001\u672a\u786e\u8ba4\uff1a\u6587\u5b57\u53ef\u80fd\u505c\u7559\u5728\u8f93\u5165\u6846\uff0c\u5c06\u7ee7\u7eed\u91cd\u8bd5');
+  if (!confirmed) logLine('[auto-resume] \u53d1\u9001\u672a\u786e\u8ba4\uff1a\u6d88\u606f\u672a\u8fdb\u5165\u4f1a\u8bdd\u6d41\uff0c\u5c06\u7ee7\u7eed\u91cd\u8bd5');
   if (busy && confirmed) {
     // 会话进行中 → 消息进队列后，把接续任务那行「插话发送」插到队列最前。
     // 队列多项时官方 dock 默认折叠（按钮不在 DOM），先点 header 展开。
@@ -3054,7 +3060,7 @@ async function injectAndSendOnce(text) {
       await new Promise((r) => setTimeout(r, 1000));
     }
   }
-  // 3) 用户草稿放回输入框（不发送，排在接续任务之后）。
+  // 5) 用户草稿放回输入框（不发送，排在接续任务之后）。
   if (userDraft) {
     await new Promise((r) => setTimeout(r, 1500));
     clipboard.writeText(userDraft);
@@ -3117,20 +3123,22 @@ ipcMain.on('dsh:web-ready', () => {
     const uniqueMark = String(msg).startsWith(RESUME_PREFIX)
       ? String(msg).slice(RESUME_PREFIX.length).trim().slice(0, 60)
       : String(msg).slice(0, 60);
-    if (uniqueMark && sessionContainsText(uniqueMark, { full: true })) {
-      logLine('[auto-resume] \u63a5\u7eed\u4efb\u52a1\u5df2\u5728\u4f1a\u8bdd\u4e2d\uff0c\u8df3\u8fc7\u515c\u5e95\u6ce8\u5165');
-      return;
-    }
-    // 官方 RPC 直发优先：host 侧直达当前会话，页面 reload 不丢消息（输入框注入在页面
-    // reload 瞬间会丢——消息已提交但未达 host）。失败再退回输入框注入。
-    rpcPromptCurrentSession(msg)
-      .then((sent) => {
-        if (sent) { logLine('[auto-resume] \u5df2\u81ea\u52a8\u63a5\u7eed\u4efb\u52a1'); return; }
-        return autoResumeInject(msg)
-          .then(() => logLine('[auto-resume] \u5df2\u81ea\u52a8\u63a5\u7eed\u4efb\u52a1'))
-          .catch((err) => logLine('[auto-resume] \u6ce8\u5165\u5931\u8d25\uff08\u4efb\u52a1\u672a\u53d1\u9001\uff09\uff1a' + (err && err.message ? err.message : err)));
-      })
-      .catch((err) => logLine('[auto-resume] \u6ce8\u5165\u5931\u8d25\uff08\u4efb\u52a1\u672a\u53d1\u9001\uff09\uff1a' + (err && err.message ? err.message : err)));
+    (async () => {
+      if (uniqueMark && await sessionContainsTextAsync(uniqueMark, { full: true })) {
+        logLine('[auto-resume] \u63a5\u7eed\u4efb\u52a1\u5df2\u5728\u4f1a\u8bdd\u4e2d\uff0c\u8df3\u8fc7\u515c\u5e95\u6ce8\u5165');
+        return;
+      }
+      // 官方 RPC 直发优先：host 侧直达当前会话，页面 reload 不丢消息（输入框注入在页面
+      // reload 瞬间会丢——消息已提交但未达 host）。失败再退回输入框注入。
+      rpcPromptCurrentSession(msg)
+        .then((sent) => {
+          if (sent) { logLine('[auto-resume] \u5df2\u81ea\u52a8\u63a5\u7eed\u4efb\u52a1'); return; }
+          return autoResumeInject(msg)
+            .then(() => logLine('[auto-resume] \u5df2\u81ea\u52a8\u63a5\u7eed\u4efb\u52a1'))
+            .catch((err) => logLine('[auto-resume] \u6ce8\u5165\u5931\u8d25\uff08\u4efb\u52a1\u672a\u53d1\u9001\uff09\uff1a' + (err && err.message ? err.message : err)));
+        })
+        .catch((err) => logLine('[auto-resume] \u6ce8\u5165\u5931\u8d25\uff08\u4efb\u52a1\u672a\u53d1\u9001\uff09\uff1a' + (err && err.message ? err.message : err)));
+    })();
   } catch { /* 忽略 */ }
 });
 
@@ -3141,10 +3149,11 @@ ipcMain.on('dsh:web-ready', () => {
 async function rpcPromptCurrentSession(text) {
   let sessionId = null;
   // web-ready 由 preload 提前发出，页面脚本可能尚未初始化，localStorage 读取会失败——
-  // 轮询重试最多 ~5 秒（命中即走官方 RPC 直发），始终读不到再退回输入框注入。
+  // 轮询重试最多 ~20 秒（命中即走官方 RPC 直发），始终读不到再退回输入框注入。
+  // 之前 5s 太短：页面冷启动（含 harness 初始化）常超过 5s，导致直发通道没机会走。
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      const deadline = Date.now() + 5000;
+      const deadline = Date.now() + 20000;
       while (Date.now() < deadline) {
         try {
           const v = await mainWindow.webContents.executeJavaScript(
@@ -3189,20 +3198,23 @@ function maybeAutoResumeFromHandoff() {
     if (!fs.existsSync(handoff)) return;
     const text = '\u8bf7\u6309 .dsh/handoff.md \u63a5\u7eed\u4efb\u52a1\uff1a\u5148\u8bfb\u8be5\u6587\u4ef6\u4e0e AGENTS.md\uff0c\u518d\u7528 memory__search_nodes \u67e5 task-progress\uff0c\u7136\u540e\u76f4\u63a5\u7ee7\u7eed\uff0c\u4e0d\u8981\u91cd\u505a\u5df2\u5b8c\u6210\u7684\u5de5\u4f5c\u3002';
     const mark = '\u8bf7\u6309 .dsh/handoff.md \u63a5\u7eed\u4efb\u52a1';
-    if (sessionContainsText(mark, { full: true })) {
-      logLine('[auto-resume] handoff \u63a5\u7eed\u6307\u4ee4\u5df2\u5728\u4f1a\u8bdd\u4e2d\uff0c\u8df3\u8fc7');
-      return;
-    }
-    logLine('[auto-resume] \u68c0\u6d4b\u5230 .dsh/handoff.md\uff0c\u81ea\u52a8\u53d1\u9001\u63a5\u7eed\u6307\u4ee4');
-    // 官方 RPC 直发优先（host 侧直达当前会话，reload 不丢消息）；失败退回输入框注入。
-    rpcPromptCurrentSession(text)
-      .then((sent) => {
-        if (sent) { logLine('[auto-resume] handoff \u63a5\u7eed\u6307\u4ee4\u5df2\u81ea\u52a8\u53d1\u9001'); return; }
-        return autoResumeInject(text)
-          .then(() => logLine('[auto-resume] handoff \u63a5\u7eed\u6307\u4ee4\u5df2\u81ea\u52a8\u53d1\u9001'))
-          .catch((err) => logLine('[auto-resume] handoff \u63a5\u7eed\u6307\u4ee4\u53d1\u9001\u5931\u8d25\uff1a' + (err && err.message ? err.message : err)));
-      })
-      .catch((err) => logLine('[auto-resume] handoff \u63a5\u7eed\u6307\u4ee4\u53d1\u9001\u5931\u8d25\uff1a' + (err && err.message ? err.message : err)));
+    // 去重检查走 worker（全量解压不进主线程）
+    sessionContainsTextAsync(mark, { full: true }).then((already) => {
+      if (already) {
+        logLine('[auto-resume] handoff \u63a5\u7eed\u6307\u4ee4\u5df2\u5728\u4f1a\u8bdd\u4e2d\uff0c\u8df3\u8fc7');
+        return;
+      }
+      logLine('[auto-resume] \u68c0\u6d4b\u5230 .dsh/handoff.md\uff0c\u81ea\u52a8\u53d1\u9001\u63a5\u7eed\u6307\u4ee4');
+      // 官方 RPC 直发优先（host 侧直达当前会话，reload 不丢消息）；失败退回输入框注入。
+      rpcPromptCurrentSession(text)
+        .then((sent) => {
+          if (sent) { logLine('[auto-resume] handoff \u63a5\u7eed\u6307\u4ee4\u5df2\u81ea\u52a8\u53d1\u9001'); return; }
+          return autoResumeInject(text)
+            .then(() => logLine('[auto-resume] handoff \u63a5\u7eed\u6307\u4ee4\u5df2\u81ea\u52a8\u53d1\u9001'))
+            .catch((err) => logLine('[auto-resume] handoff \u63a5\u7eed\u6307\u4ee4\u53d1\u9001\u5931\u8d25\uff1a' + (err && err.message ? err.message : err)));
+        })
+        .catch((err) => logLine('[auto-resume] handoff \u63a5\u7eed\u6307\u4ee4\u53d1\u9001\u5931\u8d25\uff1a' + (err && err.message ? err.message : err)));
+    }).catch((err) => logLine('[auto-resume] handoff \u53bb\u91cd\u68c0\u67e5\u5931\u8d25\uff1a' + (err && err.message ? err.message : err)));
   } catch { /* 忽略 */ }
 }
 

@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const https = require('node:https');
+const zlib = require('node:zlib');
 const sharp = require('sharp');
 const { decompressFrames } = require('./usage');
 
@@ -336,6 +337,8 @@ function modelSupportsVision(modelName) {
  * 读取指定工作区当前（最新）会话实际使用的模型名（纯 Node，无 Electron 依赖）。
  * 数据源：会话 JSONL 中最近一条 request/context.model（或 request/header.config.model）。
  * 反映会话级模型切换（比 settings.yaml 默认模型更准确）。失败返回 null。
+ * 性能：先做尾帧快检（只解压尾部 ≤256KB 的最后 24 帧，最近一轮的模型记录必然在尾部）；
+ * 尾帧无模型记录时才回退全量解压——避免启动/面板轮询时全量解压数十 MB JSON 卡主线程。
  */
 function readCurrentModel(sessionsRoot, workspaceKey) {
   try {
@@ -350,6 +353,10 @@ function readCurrentModel(sessionsRoot, workspaceKey) {
       if (!best || mtimeMs > best.mtimeMs) best = { file, mtimeMs };
     }
     if (!best) return null;
+    // 尾帧快检：最近一轮的 request/context 与 request/header 一定在尾部帧里
+    const tailModel = modelFromTailFrames(best.file, 256 * 1024, 24);
+    if (tailModel) return tailModel;
+    // 回退：全量扫描（罕见场景：尾部只有 UI 同步事件无模型记录）
     const text = decompressFrames(fs.readFileSync(best.file));
     let model = null;
     for (const rawLine of text.split('\n')) {
@@ -364,6 +371,40 @@ function readCurrentModel(sessionsRoot, workspaceKey) {
         && typeof r.data.header.config.model === 'string' && r.data.header.config.model) {
         model = r.data.header.config.model;
       }
+    }
+    return model;
+  } catch { return null; }
+}
+
+/** 从会话文件尾部最后 maxFrames 个 zstd 帧里找最近一条模型记录（无则返回 null）。 */
+function modelFromTailFrames(file, tailBytes, maxFrames) {
+  try {
+    const st = fs.statSync(file);
+    if (st.size <= tailBytes) return null; // 小文件直接走全量路径，省两次解压
+    const start = st.size - tailBytes;
+    const buf = Buffer.alloc(tailBytes);
+    const fd = fs.openSync(file, 'r');
+    try { fs.readSync(fd, buf, 0, buf.length, start); } finally { fs.closeSync(fd); }
+    const magic = [0x28, 0xb5, 0x2f, 0xfd];
+    const positions = [];
+    for (let i = buf.length - 4; i >= 0; i--) {
+      if (buf[i] === magic[0] && buf[i + 1] === magic[1] && buf[i + 2] === magic[2] && buf[i + 3] === magic[3]) {
+        positions.push(i);
+        if (positions.length >= maxFrames) break;
+      }
+    }
+    let model = null;
+    for (const pos of positions) {
+      try {
+        const r = JSON.parse(zlib.zstdDecompressSync(buf.subarray(pos)).toString('utf8'));
+        if (!r || typeof r.type !== 'string') continue;
+        if (r.type === 'request/context' && r.data && typeof r.data.model === 'string' && r.data.model) {
+          model = r.data.model;
+        } else if (r.type === 'request/header' && r.data && r.data.header && r.data.header.config
+          && typeof r.data.header.config.model === 'string' && r.data.header.config.model) {
+          model = r.data.header.config.model;
+        }
+      } catch { /* 尾部可能含未写完的帧，跳过 */ }
     }
     return model;
   } catch { return null; }
