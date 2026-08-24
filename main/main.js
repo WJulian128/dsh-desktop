@@ -560,6 +560,16 @@ function broadcastState() {
   }
 }
 
+/** 面板刷新广播：主进程关键事件（编辑占用/地图/Git 变更等）发生时推给页面，
+ *  右侧「环境信息/模型调度」面板即时刷新，不再等轮询周期。 */
+function broadcastPanelRefresh(reason) {
+  try {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('dsh:panel-refresh', { reason: reason || 'change', time: Date.now() });
+    }
+  } catch { /* 忽略 */ }
+}
+
 function msgBox(opts) {
   if (mainWindow && !mainWindow.isDestroyed()) return dialog.showMessageBox(mainWindow, opts);
   return dialog.showMessageBox(opts);
@@ -1387,6 +1397,7 @@ function startRpc() {
     state.workspace = dir;
     rememberWorkspace(dir);
     broadcastState();
+    broadcastPanelRefresh('workspace');
     startHarness();
     return { workspace: dir };
   });
@@ -1688,23 +1699,31 @@ function startRpc() {
   rpc.on('projectMapSet', async (params) => {
     let gitH = null;
     try { gitH = await gitHead(state.workspace); } catch { /* 忽略 */ }
-    return projectMap.saveMap(state.workspace, {
+    const result = projectMap.saveMap(state.workspace, {
       map: params && params.map,
       files: params && params.files,
       gitHead: gitH || undefined,
       updatedBySession: (params && params.sessionId) || activeSessionId(),
     });
+    if (result && result.ok) broadcastPanelRefresh('project-map');
+    return result;
   });
 
   /* ---- 多会话编辑占用 + 变更日志 + 快照（互不干扰 + 可回溯） ---- */
 
   rpc.on('editClaim', async (params) => {
     const sid = (params && params.sessionId) || activeSessionId();
-    return workspaceGuard.claimFiles(state.workspace, { ...(params || {}), sessionId: sid });
+    const result = workspaceGuard.claimFiles(state.workspace, { ...(params || {}), sessionId: sid });
+    if (result && result.ok) broadcastPanelRefresh('edit-claim');
+    return result;
   });
-  rpc.on('editRelease', async (params) => workspaceGuard.releaseFiles(state.workspace, {
-    ...(params || {}), sessionId: (params && params.sessionId) || activeSessionId(),
-  }));
+  rpc.on('editRelease', async (params) => {
+    const result = workspaceGuard.releaseFiles(state.workspace, {
+      ...(params || {}), sessionId: (params && params.sessionId) || activeSessionId(),
+    });
+    if (result && result.ok && result.released && result.released.length) broadcastPanelRefresh('edit-release');
+    return result;
+  });
   rpc.on('editStatus', async (params) => workspaceGuard.claimsStatus(state.workspace, {
     sessionId: (params && params.sessionId) || activeSessionId(),
   }));
@@ -1712,17 +1731,37 @@ function startRpc() {
 
   /* ---- Git（代理可用的安全白名单操作；全部走 git-runner 白名单封装） ---- */
 
-  rpc.on('gitInit', async () => gitInit(state.workspace));
+  rpc.on('gitInit', async () => {
+    const result = await gitInit(state.workspace);
+    if (result && result.ok) broadcastPanelRefresh('git');
+    return result;
+  });
   rpc.on('gitStatus', async () => gitStatus(state.workspace));
   rpc.on('gitDiff', async (params) => gitDiff(state.workspace, params || {}));
   rpc.on('gitLog', async (params) => gitLog(state.workspace, params || {}));
-  rpc.on('gitCommit', async (params) => gitCommit(state.workspace, {
-    ...(params || {}), sessionId: (params && params.sessionId) || activeSessionId(),
-  }));
+  rpc.on('gitCommit', async (params) => {
+    const result = await gitCommit(state.workspace, {
+      ...(params || {}), sessionId: (params && params.sessionId) || activeSessionId(),
+    });
+    if (result && result.ok) broadcastPanelRefresh('git');
+    return result;
+  });
   rpc.on('gitBranch', async () => gitBranch(state.workspace));
-  rpc.on('gitCheckout', async (params) => gitCheckout(state.workspace, params || {}));
-  rpc.on('gitRestore', async (params) => gitRestore(state.workspace, params || {}));
-  rpc.on('gitStash', async (params) => gitStash(state.workspace, params || {}));
+  rpc.on('gitCheckout', async (params) => {
+    const result = await gitCheckout(state.workspace, params || {});
+    if (result && result.ok) broadcastPanelRefresh('git');
+    return result;
+  });
+  rpc.on('gitRestore', async (params) => {
+    const result = await gitRestore(state.workspace, params || {});
+    if (result && result.ok) broadcastPanelRefresh('git');
+    return result;
+  });
+  rpc.on('gitStash', async (params) => {
+    const result = await gitStash(state.workspace, params || {});
+    if (result && result.ok) broadcastPanelRefresh('git');
+    return result;
+  });
 
   return rpc.start();
 }
@@ -1949,7 +1988,9 @@ function registerDesktopFeatureIpc() {
     try {
       const root = path.join(state.dshHome, 'sessions', workspaceSessionKey(state.workspace));
       const active = findActiveSession(root);
-      return await gitCommit(state.workspace, { message: payload && payload.message, sessionId: active ? active.sessionId : 'dsh' });
+      const result = await gitCommit(state.workspace, { message: payload && payload.message, sessionId: active ? active.sessionId : 'dsh' });
+      if (result && result.ok) broadcastPanelRefresh('git');
+      return result;
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };
     }
@@ -1958,7 +1999,9 @@ function registerDesktopFeatureIpc() {
   ipcMain.handle('dsh:git-restore', async () => {
     if (!state.workspace) return { ok: false, error: '\u5c1a\u672a\u9009\u62e9\u5de5\u4f5c\u533a' };
     try {
-      return await gitRestore(state.workspace, {});
+      const result = await gitRestore(state.workspace, {});
+      if (result && result.ok) broadcastPanelRefresh('git');
+      return result;
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };
     }

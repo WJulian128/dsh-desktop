@@ -10,6 +10,8 @@ function subscribe(channel, cb) {
 contextBridge.exposeInMainWorld('dshDesktop', {
   getState: () => ipcRenderer.invoke('dsh:state'),
   onState: (cb) => subscribe('dsh:state', cb),
+  // 面板实时刷新信号（编辑占用/项目地图/Git 等主进程事件推送，页面即时刷新右侧双面板）
+  onPanelRefresh: (cb) => subscribe('dsh:panel-refresh', cb),
   retry: () => ipcRenderer.invoke('dsh:retry'),
   chooseWorkspace: () => ipcRenderer.invoke('dsh:choose-workspace'),
   openLogs: () => ipcRenderer.invoke('dsh:open-logs'),

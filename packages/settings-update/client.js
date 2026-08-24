@@ -2060,26 +2060,48 @@ window.__ModuleLoader__.load({
         let disposed = false;
         const d = api();
         let off = null;
+        let offPush = null;
+        let pushTimer = null;
+        let lastPushAt = 0;
         if (d) {
           try { off = d.onState((s) => { if (!disposed) setState(s); }); } catch (err) { /* 忽略 */ }
           d.getState().then((s) => { if (!disposed) setState(s); }).catch(() => {});
+          // 主进程事件推送（编辑占用/项目地图/Git 等变化）→ 面板即时刷新（1.5s 节流防抖）
+          if (typeof d.onPanelRefresh === 'function') {
+            offPush = d.onPanelRefresh(() => {
+              if (disposed) return;
+              const now = Date.now();
+              const wait = Math.max(0, 1500 - (now - lastPushAt));
+              if (pushTimer) clearTimeout(pushTimer);
+              pushTimer = setTimeout(() => { lastPushAt = Date.now(); if (!disposed) refresh(true); }, wait);
+            });
+          }
         }
         let usageTick = 0;
-        const refresh = () => {
+        // cheapOnly：只刷 Git/项目地图/编辑占用（推送路径；跳过重的 usage/activity 扫描）
+        const refresh = (cheapOnly) => {
           if (!d) return;
           usageTick++;
           if (d.gitSummary) d.gitSummary().then((r) => { if (!disposed) setGit(r); }).catch(() => {});
-          // 项目代码地图 + 编辑占用（轻量状态查询，20s 与 git 同频刷新）
+          // 项目代码地图 + 编辑占用（轻量查询，与 git 同频高频刷新 + 事件推送）
           if (d.projectMapStatus) d.projectMapStatus().then((r) => { if (!disposed && r && r.ok) setMap(r); }).catch(() => {});
           if (d.editStatus) d.editStatus().then((r) => { if (!disposed && r && r.ok) setClaims(r); }).catch(() => {});
-          // usage 扫描较重（子进程化但仍消耗 IO）：每 6 轮（60s）一次，避免频繁唤醒
-          if (usageTick % 6 === 0 && d.getUsage) d.getUsage().then((r) => { if (!disposed && r && r.ok) setUsage(r.summary || r); }).catch(() => {});
-          if (d.activityGet) d.activityGet().then((r) => { if (!disposed && r && r.ok) setAct(r); }).catch(() => {});
+          if (cheapOnly) return;
+          // usage 扫描较重（子进程化但仍消耗 IO）：每 12 轮（60s）一次，避免频繁唤醒
+          if (usageTick % 12 === 0 && d.getUsage) d.getUsage().then((r) => { if (!disposed && r && r.ok) setUsage(r.summary || r); }).catch(() => {});
+          // activity 扫描需解压会话文件：每 4 轮（20s）一次
+          if (usageTick % 4 === 0 && d.activityGet) d.activityGet().then((r) => { if (!disposed && r && r.ok) setAct(r); }).catch(() => {});
         };
-        // 会话切换时立即刷新，之后每 20 秒自动刷新（长会话下减少解压/解析频率）
-        refresh();
-        const timer = setInterval(refresh, 20000);
-        return () => { disposed = true; if (off) { try { off(); } catch (ignored) {} } clearInterval(timer); };
+        // 会话切换时立即全量刷新，之后每 5 秒刷新（Git/地图/占用轻量高频；usage/activity 降频）
+        refresh(false);
+        const timer = setInterval(() => refresh(false), 5000);
+        return () => {
+          disposed = true;
+          if (off) { try { off(); } catch (ignored) {} }
+          if (offPush) { try { offPush(); } catch (ignored) {} }
+          if (pushTimer) clearTimeout(pushTimer);
+          clearInterval(timer);
+        };
       }, [currentSessionId]);
 
       if (!api()) {
@@ -2247,12 +2269,30 @@ window.__ModuleLoader__.load({
             }
           } catch { /* 忽略 */ }
         };
-        // 启动错峰：页面就绪后延迟 2s 再开始子代理流轮询（避开启动期 IPC/解压峰值），5s 一轮
+        // 启动错峰：页面就绪后延迟 2s 再开始子代理流轮询（避开启动期 IPC/解压峰值），3s 一轮
         const firstSubs = setTimeout(() => { if (!disposed) loadSubs(); }, 2000);
         loadProviders();
         const t1 = setInterval(loadProviders, 30000);
-        const t2 = setInterval(loadSubs, 5000);
-        return () => { disposed = true; clearTimeout(firstSubs); clearInterval(t1); clearInterval(t2); };
+        const t2 = setInterval(loadSubs, 3000);
+        // 主进程事件推送（Git/占用/地图等）→ 子代理列表立即刷新（1s 节流；厂商总览仍走 30s 轮询避免打厂商 API）
+        let offPush = null;
+        let pushTimer = null;
+        let lastPushAt = 0;
+        if (typeof d.onPanelRefresh === 'function') {
+          offPush = d.onPanelRefresh(() => {
+            if (disposed) return;
+            const now = Date.now();
+            const wait = Math.max(0, 1000 - (now - lastPushAt));
+            if (pushTimer) clearTimeout(pushTimer);
+            pushTimer = setTimeout(() => { lastPushAt = Date.now(); if (!disposed) loadSubs(); }, wait);
+          });
+        }
+        return () => {
+          disposed = true;
+          clearTimeout(firstSubs); clearInterval(t1); clearInterval(t2);
+          if (pushTimer) clearTimeout(pushTimer);
+          if (offPush) { try { offPush(); } catch (ignored) {} }
+        };
       }, [manualTick, currentSessionId]);
 
       if (!api()) {
