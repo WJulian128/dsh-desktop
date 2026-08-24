@@ -9,7 +9,7 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - `renderer/`：加载页/终端/Git 窗（git-diff.html）/截图选区
 - `packages/settings-update/`：设置页 + 右侧常驻面板客户端插件（client.js，React，经 web-patch 注入）
 - `packages/subagent-approval/`、`packages/llm-openai-compat/`：子代理审批桥 / 通用 OpenAI 兼容厂商 adapter
-- `scripts/`：测试（test-*.js/mjs）+ 打包冒烟（test-packaged-boot.ps1、smoke-test.ps1）+ install-skills.mjs
+- `scripts/`：测试（test-*.js/mjs）+ 打包冒烟（test-packaged-boot.ps1、smoke-test.ps1）+ install-skills.mjs（多来源 skills 安装器：obra/superpowers 核心 + superpowers-skills 精选 + mattpocock/skills 精选）
 
 ## 入口
 - Electron 入口：main/main.js（package.json "main"）
@@ -49,5 +49,6 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - main/main.js：startRpc() 注册 RPC（变更事件广播面板刷新）；injectAndSendOnce/autoResumeInject 自动接续（粘贴验证 + transcript 确认 + 幂等重试）；web-ready 经 rpcPromptCurrentSession（20s 窗口）直发优先
 - packages/settings-update/client.js：SchedPanel 按 props.sessionId 过滤子代理（parentSession）；EnvPanel 含 Git/项目地图/编辑占用行（5s 高频 + 推送；usage 60s/activity 20s 降频）
 - renderer/git-diff.html：Git 变更窗（分支/提交/回滚/复制 + 其他会话占用警告横幅）
+- scripts/install-skills.mjs：多来源 skills 安装器（core/sp/mp 三清单，frontmatter 归一化）
 - scripts/test-project-map.js、test-workspace-guard.js、test-transcript-check.js：新模块单测
 - .gitignore：排除依赖/构建产物/本地运行时状态；保留 .dsh/project-map.md 共享
