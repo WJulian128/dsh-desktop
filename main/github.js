@@ -172,9 +172,13 @@ async function createRepo(token, { name, description, isPrivate = true }) {
   return { name: j.name, fullName: j.full_name, htmlUrl: j.html_url, cloneUrl: j.clone_url, sshUrl: j.ssh_url, isPrivate: j.private };
 }
 
-/** 重命名仓库（PATCH /repos/{fullName}）。返回新仓库信息（cloneUrl 会变化，需同步 git remote set-url）。 */
+/** 重命名仓库（PATCH /repos/{owner}/{repo}）。返回新仓库信息（cloneUrl 会变化，需同步 git remote set-url）。 */
 async function renameRepo(token, fullName, newName) {
-  const res = await api(token, 'PATCH', '/repos/' + encodeURIComponent(fullName), { name: newName });
+  const parts = String(fullName || '').split('/');
+  const owner = encodeURIComponent(String(parts[0] || '').trim());
+  const repoName = encodeURIComponent(String(parts[1] || '').trim());
+  if (!owner || !repoName) throw new Error('fullName 需为 owner/repo 形式');
+  const res = await api(token, 'PATCH', '/repos/' + owner + '/' + repoName, { name: newName });
   if (res.status !== 200) {
     const err = res.json && (res.json.message || res.json.errors);
     throw new Error('重命名失败：' + JSON.stringify(err).slice(0, 200));
