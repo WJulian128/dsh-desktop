@@ -27,7 +27,7 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - MCP 工具走 desktop-rpc（Bearer token）；RPC handler 在 main.js startRpc() 注册，MCP 侧在 mcp-server.mjs registerTool
 - 面板实时化：主进程关键事件经 dsh:panel-refresh 推送，客户端节流刷新
 - 会话存储：$DSH_HOME/sessions/<workspaceKey>/<sessionId>/session.jsonl.zstd；子代理 session 记录顶层带 origin:'subagent'+parentSession
-- Git/GitHub：token 存 $DSH_HOME/.github-auth.json（绝不入库/打日志）；push 禁 force、pull --ff-only；设备码 client_id 复用 gh CLI 公开 id（scope: repo）；仓库默认私有
+- Git/GitHub：远程仓库 = github.com/WJulian128/dsh-desktop（私有，2026-08-25 由 DeepseekHarness 重命名而来）；token 存 $DSH_HOME/.github-auth.json（绝不入库/打日志）；push 禁 force、pull --ff-only；仓库默认私有
 - 规范块 agents-norms v5：项目地图/多会话防护/Git+GitHub+分支工作流/调度面板/多轮代码一致性
 
 ## 已知陷阱
@@ -37,6 +37,7 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - zstd 压缩可压掉重复内容（3MB 'x' → 400B），测试大文件场景要用随机内容
 - git 操作用 git-runner.js 白名单封装；GitHub API 需 User-Agent 头
 - GitHub 设备流：authorization_pending 继续轮询、slow_down 加大间隔、expired_token 重新发起
+- GitHub API 路径编码：owner/repo 必须分段 encodeURIComponent，整体编码会把斜杠编成 %2F → 404
 - git status 分支行形态多变：`## main`（无上游）/ `## main...origin/main`（无差异）/ `## main...origin/main [ahead 1]`（有领先）/ `[behind N]`（仅落后）——parseGitSummary 已兼容，分支展示只取 ... 前本地名
 - 面板 Git 组「非 Git 工作区」排查：dsh:git-summary IPC 有诊断日志（[git-summary] ok/失败 + head），先看日志再改代码
 
