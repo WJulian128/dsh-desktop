@@ -1300,7 +1300,9 @@ window.__ModuleLoader__.load({
 
       // 截图发送被拒（纯文本模型不支持图片）→ 发送瞬间补救：删除图片草稿 → 逐张识别 →
       // 汇总描述填入并自动重发。支持多张截图/附件：全部识别，绝不漏图。
-      // 用 MutationObserver 监听"不支持图片"提示的【新增】——历史残留提示不会触发。
+      // 拒绝文案可能渲染在 shadow DOM / 常驻复用的 toast 节点里：
+      // ① MutationObserver 只覆盖 document 树（shadow root 内不可见），并补 characterData（复用节点改写文案）；
+      // ② 800ms 兜底轮询深扫全部 shadow root 的文本节点，匹配数较基线新增即触发。
       react.useEffect(() => {
         if (!inputActions) return undefined;
         const d = api();
@@ -1360,13 +1362,19 @@ window.__ModuleLoader__.load({
             debug('rescue-rpc-missing', '');
           }
         };
+        const rejectRe = /\u4e0d\u652f\u6301\u56fe\u7247|\u56fe\u7247\u53d1\u9001\u5931\u8d25/;
         let observer = null;
         try {
           observer = new MutationObserver((muts) => {
             for (const m of muts) {
-              for (const node of m.addedNodes) {
-                const txt = node && node.nodeType === 3 ? node.textContent : (node && node.nodeType === 1 ? node.textContent : '');
-                if (txt && txt.includes('\u4e0d\u652f\u6301\u56fe\u7247')) {
+              const nodes = [];
+              for (const node of m.addedNodes) nodes.push(node);
+              // toast 常驻复用节点改写文案时没有 addedNodes——characterData 变更检查 target 本身
+              if (m.type === 'characterData' && m.target) nodes.push(m.target);
+              for (const node of nodes) {
+                const txt = node && (node.nodeType === 3 || node.nodeType === 1) ? node.textContent : '';
+                if (txt && rejectRe.test(txt)) {
+                  debug('reject-seen', String(txt).slice(0, 60));
                   doRescue();
                   return;
                 }
@@ -1375,10 +1383,43 @@ window.__ModuleLoader__.load({
           });
           observer.observe(document.body, { childList: true, subtree: true, characterData: true });
         } catch { observer = null; }
+        // 兜底轮询：深扫全 DOM（含 shadow root）文本节点，拒绝提示出现在 shadow 树里也逃不掉。
+        // 计数比基线增加才触发（历史残留计入基线，不误报）；回落时同步基线防后续误判。
+        let baselineReject = -1;
+        const countRejectTexts = () => {
+          let n = 0;
+          const walk = (root) => {
+            if (!root || n > 300) return;
+            for (const child of root.childNodes) {
+              if (child.nodeType === 3) {
+                if (rejectRe.test(child.nodeValue || '')) n++;
+              } else if (child.nodeType === 1) {
+                walk(child);
+                if (child.shadowRoot) walk(child.shadowRoot);
+              }
+            }
+          };
+          walk(document.body);
+          return n;
+        };
+        const pollTimer = setInterval(() => {
+          try {
+            const n = countRejectTexts();
+            if (baselineReject === -1) { baselineReject = n; return; }
+            if (n > baselineReject) {
+              debug('reject-poll', { n, baseline: baselineReject });
+              baselineReject = n;
+              doRescue();
+            } else if (n < baselineReject) {
+              baselineReject = n;
+            }
+          } catch { /* 忽略 */ }
+        }, 800);
         // 安全阀：120s 后清理（用户没发送则图片保持显示、识别结果丢弃）
         const timeout = setTimeout(() => { pendingShots.current = []; }, 120000);
         return () => {
           clearTimeout(timeout);
+          clearInterval(pollTimer);
           if (observer) { try { observer.disconnect(); } catch { /* 忽略 */ } }
         };
       }, [inputActions]);

@@ -80,6 +80,7 @@ let quickWindow = null;
 let captureWindow = null;
 let captureBackdrop = null; // 冻结快照缓存 { img, at }（startBackdropCapture 写入，capture-region 复用）
 let lastBackdropDataUrl = null; // 最近一次展示画面（show 后重发兜底用）
+let captureFlowToken = 0; // 每次点击截图按钮 +1；关闭/取消再 +1，使旧的 show 回调与 2.5s 安全阀失效
 let gitDiffWindow = null;
 let tray = null;
 let quitting = false;
@@ -2583,16 +2584,25 @@ function registerDesktopFeatureIpc() {
   // 送达隐藏窗口后**才显示窗口**——彻底消灭"黑屏等待"阶段（旧流程先显示暗色窗口再等画面，
   // 那几百毫秒~1 秒的暗窗就是用户看到的黑屏）。
   ipcMain.handle('dsh:screenshot', () => {
+    captureFlowToken++;
+    const myToken = captureFlowToken;
     openCaptureWindow(); // 确保窗口存在 + 清掉上一次残留（隐藏态，不显示）
     const t0 = Date.now();
     startBackdropCapture()
       .then((ok) => {
+        // 流程已结束（截完/取消）则绝不把窗口再弹出来——这是"闪回"的根因
+        if (captureFlowToken !== myToken) return;
         if (ok || Date.now() - t0 > 1800) showCaptureWindow();
       })
-      .catch(() => showCaptureWindow());
+      .catch(() => { if (captureFlowToken === myToken) showCaptureWindow(); });
     // 安全阀：2.5s 内无论成败都显示（捕获挂死时也能框选，提交时现场捕获兜底）
+    // 但流程已关闭/取消则作废，防止截图完成后再闪现上一次的冻结画面
     setTimeout(() => {
-      try { if (captureWindow && !captureWindow.isDestroyed() && !captureWindow.isVisible()) showCaptureWindow(); } catch { /* 忽略 */ }
+      try {
+        if (captureFlowToken === myToken && captureWindow && !captureWindow.isDestroyed() && !captureWindow.isVisible()) {
+          showCaptureWindow();
+        }
+      } catch { /* 忽略 */ }
     }, 2500);
     return { ok: true };
   });
@@ -3156,6 +3166,7 @@ function closeCaptureWindow() {
   // 隐藏而非销毁：窗口创建在软件渲染下很慢，复用消除再次点击截图按钮的等待。
   // 隐藏前先摘掉 alwaysOnTop（软件渲染下全屏置顶窗直接 hide 偶发残留黑帧——
   // 用户反馈的"截完图偶发黑屏"），z-order 变化会强制一次干净的合成。
+  captureFlowToken++; // 本次截图流程已结束：作废 2.5s 安全阀与延迟 show 回调，防止旧冻结画面闪回
   if (captureWindow && !captureWindow.isDestroyed()) {
     try { captureWindow.setAlwaysOnTop(false); } catch { /* 忽略 */ }
     try { captureWindow.hide(); } catch { /* 忽略 */ }
