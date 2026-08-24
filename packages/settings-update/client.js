@@ -2214,7 +2214,8 @@ window.__ModuleLoader__.load({
             ? h('p', { key: 'gh0', style: { ...st.hint, padding: '2px' } }, '读取中…')
             : h('div', { key: 'gh', style: { display: 'flex', flexDirection: 'column' } },
               envRow('账号', github.authed ? github.login : '未登录', 'gha'),
-              envRow('远程', github.remote ? String(github.remote).split('\n')[0].split('\t')[0].trim() : '未关联', 'ghr'))));
+              envRow('远程', github.remote ? String(github.remote).split('\n')[0].split('\t')[0].trim() : '未关联', 'ghr'),
+              envRow('可见性', github.visibility === 'public' ? '公开' : (github.visibility === 'private' ? '私有' : '—'), 'ghv'))));
     }
 
     /* ================= 模型调度面板（右侧常驻双面板下半区；厂商总览 + 子代理实时输出） ================= */
@@ -2474,6 +2475,24 @@ window.__ModuleLoader__.load({
         catch (err) { showMsg('error', String((err && err.message) || err)); }
       };
 
+      const setVisibility = async (isPrivate) => {
+        if (!isPrivate && !window.confirm('确认完全公开？任何人可下载/克隆；公开后被 fork 的副本不受控制。')) return;
+        setBusy(true); showMsg(null);
+        try {
+          const r = await api().githubSetVisibility({ isPrivate });
+          if (!r.ok) { showMsg('error', r.error || '切换失败'); return; }
+          showMsg('ok', '已切换为' + (r.visibility === 'public' ? '完全公开' : '私有'));
+          refresh();
+        } catch (err) { showMsg('error', String((err && err.message) || err)); }
+        finally { setBusy(false); }
+      };
+
+      const toggleVisibilityBtn = (status && status.authed && status.remote)
+        ? (status.visibility === 'public'
+          ? btn('切换为私有', () => setVisibility(true), { disabled: busy })
+          : btn('切换为完全公开', () => setVisibility(false), { danger: true, disabled: busy }))
+        : null;
+
       const remoteLine = status && status.remote ? String(status.remote).split('\n')[0].trim() : null;
 
       return h("div", { style: st.grid },
@@ -2491,6 +2510,12 @@ window.__ModuleLoader__.load({
           h("div", { style: st.row },
             h("span", { style: st.label }, "当前分支"),
             h("span", { style: st.value }, (status && status.branch) || '—')),
+          h("div", { style: st.row },
+            h("span", { style: st.label }, "仓库可见性"),
+            h("span", { style: st.value },
+              status && status.visibility === 'public' ? '完全公开（任何人可下载）'
+                : status && status.visibility === 'private' ? '私有'
+                  : (status && status.remote ? '读取中…' : '未关联'))),
           flow
             ? h("div", { style: { ...st.form, borderColor: 'var(--dsw-alias-state-business-primary, #d29922)' } },
               h("div", { style: st.fieldLabel }, "登录码（打开网址输入后授权，自动完成）"),
@@ -2503,6 +2528,7 @@ window.__ModuleLoader__.load({
           h("div", { style: st.actions },
             btn(flow ? '登录中…' : '快速登录（设备码）', startLogin, { primary: !status || !status.authed, disabled: !!flow || busy }),
             btn('一键关联远程仓库并推送', remoteSetup, { disabled: busy || !status || !status.authed }),
+            toggleVisibilityBtn,
             btn('断开登录', logout, { disabled: !status || !status.authed, danger: true }))),
         h("p", { style: st.hint }, "分支工作流：较大任务用 git_checkout 开 feature 分支，完成后 git_merge 合并回主分支并 git_push；日常小改直接提交推送。登录后模型还可用 dsh_desktop_github_search_code 搜索 GitHub 代码参考实现。"));
     }

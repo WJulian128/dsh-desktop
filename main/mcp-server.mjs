@@ -968,6 +968,24 @@ server.registerTool(
 // ---- Git 分支协作（push/pull/merge，全部禁 force） ----
 
 server.registerTool(
+  "dsh_desktop_github_set_visibility",
+  {
+    title: "切换仓库可见性",
+    description:
+      "切换 GitHub 远程仓库的可见性：private=true 私有（仅本人与协作者可见），private=false 完全公开（任何人可下载）。" +
+      "⚠ 公开不可逆：公开后被他人 fork 的副本不受控制；公开前确认仓库不含密钥/个人信息。",
+    inputSchema: z.object({
+      private: z.boolean().describe("true=私有；false=完全公开"),
+    }),
+  },
+  async (args) => {
+    const result = await call("githubSetVisibility", { isPrivate: args.private });
+    if (!result.ok) throw new Error(result.error || "切换失败");
+    return text("仓库已切换为" + (result.visibility === 'public' ? '公开' : '私有') + "：" + result.fullName + "\n" + result.htmlUrl);
+  },
+);
+
+server.registerTool(
   "dsh_desktop_git_push",
   {
     title: "Git 推送到远程",

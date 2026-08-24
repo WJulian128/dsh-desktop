@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   githubLoginPoll: () => ipcRenderer.invoke('dsh:github-login-poll'),
   githubLogout: () => ipcRenderer.invoke('dsh:github-logout'),
   githubRemoteSetup: (payload) => ipcRenderer.invoke('dsh:github-remote-setup', payload),
+  githubSetVisibility: (payload) => ipcRenderer.invoke('dsh:github-visibility-set', payload),
   openExternal: (url) => ipcRenderer.invoke('dsh:open-external', { url }),
 
   // Ollama 本地视觉模型集成

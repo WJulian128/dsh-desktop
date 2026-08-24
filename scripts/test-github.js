@@ -20,11 +20,14 @@ const responses = {
   '/user': { status: 200, json: { login: 'octocat', name: 'Octo Cat', html_url: 'https://github.com/octocat' } },
   '/user/repos': { status: 201, json: { name: 'DeepseekHarness', full_name: 'octocat/DeepseekHarness', html_url: 'https://github.com/octocat/DeepseekHarness', clone_url: 'https://github.com/octocat/DeepseekHarness.git', ssh_url: 'git@github.com:octocat/DeepseekHarness.git', private: true } },
   '/search/code?q=test%20q&per_page=10': { status: 200, json: { total_count: 2, items: [{ name: 'a.js', path: 'src/a.js', repository: { full_name: 'o/r' }, html_url: 'https://github.com/o/r/blob/main/src/a.js' }] } },
+  'GET /repos/WJulian128/dsh-desktop': { status: 200, json: { name: 'dsh-desktop', full_name: 'WJulian128/dsh-desktop', html_url: 'https://github.com/WJulian128/dsh-desktop', private: false, visibility: 'public' } },
+  'PATCH /repos/WJulian128/dsh-desktop': { status: 200, json: { name: 'dsh-desktop', full_name: 'WJulian128/dsh-desktop', html_url: 'https://github.com/WJulian128/dsh-desktop', private: true, visibility: 'private' } },
 };
 github.setTransportForTest(async (req) => {
-  const key = req.path;
-  if (!(key in responses)) return { status: 404, json: { message: 'not found' } };
-  return responses[key];
+  const key = (req.method || 'GET') + ' ' + req.path;
+  if (key in responses) return responses[key];
+  if (req.path in responses) return responses[req.path];
+  return { status: 404, json: { message: 'not found' } };
 });
 
 (async () => {
@@ -76,6 +79,16 @@ github.setTransportForTest(async (req) => {
     check('suggestRepoName basic', github.suggestRepoName('C:\\Users\\me\\Desktop\\My-Project_1') === 'My-Project_1', '');
     check('suggestRepoName sanitize', github.suggestRepoName('C:\\bad name!') === 'bad-name', github.suggestRepoName('C:\\bad name!'));
     check('suggestRepoName empty fallback', github.suggestRepoName('') === 'workspace', '');
+  }
+  // 6. 远程解析 / 仓库信息 / 可见性切换
+  {
+    check('parseRepoFullName https', github.parseRepoFullName('origin\thttps://github.com/WJulian128/dsh-desktop.git (fetch)') === 'WJulian128/dsh-desktop', '');
+    check('parseRepoFullName ssh', github.parseRepoFullName('origin\tgit@github.com:WJulian128/dsh-desktop.git (push)') === 'WJulian128/dsh-desktop', '');
+    check('parseRepoFullName empty -> null', github.parseRepoFullName('') === null, '');
+    const repo = await github.getRepo('tok-1', 'WJulian128/dsh-desktop');
+    check('getRepo visibility public', repo !== null && repo.visibility === 'public' && repo.isPrivate === false, JSON.stringify(repo));
+    const sw = await github.setRepoVisibility('tok-1', 'WJulian128/dsh-desktop', true);
+    check('setRepoVisibility -> private', sw.visibility === 'private' && sw.isPrivate === true, JSON.stringify(sw));
   }
 
   if (failures.length) { console.log('GITHUB FAIL: ' + failures.join(', ')); process.exit(1); }

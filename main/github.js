@@ -202,6 +202,28 @@ async function setRepoVisibility(token, fullName, isPrivate) {
   return { name: j.name, fullName: j.full_name, htmlUrl: j.html_url, isPrivate: j.private, visibility: j.visibility };
 }
 
+/** 读取仓库信息（含 visibility）。不存在/无权限返回 null。 */
+async function getRepo(token, fullName) {
+  const parts = String(fullName || '').split('/');
+  if (!parts[0] || !parts[1]) return null;
+  try {
+    const res = await api(token, 'GET', '/repos/' + encodeURIComponent(parts[0]) + '/' + encodeURIComponent(parts[1]));
+    if (res.status !== 200) return null;
+    const j = res.json;
+    return { name: j.name, fullName: j.full_name, htmlUrl: j.html_url, isPrivate: j.private, visibility: j.visibility };
+  } catch { return null; }
+}
+
+/** 从 git remote -v 输出解析 owner/repo（支持 github.com 的 https 与 git@ 两种地址形式）。 */
+function parseRepoFullName(remoteOutput) {
+  const lines = String(remoteOutput || '').split('\n');
+  for (const line of lines) {
+    const m = /github\.com[:/]([^/\s]+)\/([^/\s.]+?)(?:\.git)?(?:\s|$)/i.exec(line);
+    if (m) return m[1] + '/' + m[2];
+  }
+  return null;
+}
+
 /** 代码搜索（需要登录；q 为 GitHub 代码搜索语法）。 */
 async function searchCode(token, q, perPage = 10) {
   const res = await api(token, 'GET', '/search/code?q=' + encodeURIComponent(q) + '&per_page=' + Math.min(perPage, 20));
@@ -249,6 +271,8 @@ module.exports = {
   createRepo,
   renameRepo,
   setRepoVisibility,
+  getRepo,
+  parseRepoFullName,
   searchCode,
   status,
   suggestRepoName,

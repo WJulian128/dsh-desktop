@@ -70,6 +70,7 @@ const rpc = createServer((req, res) => {
     if (payload.method === 'githubLoginPoll') return send(200, { ok: true, result: { ok: true, pending: false, login: 'octocat' } });
     if (payload.method === 'githubRemoteSetup') return send(200, { ok: true, result: { ok: true, repo: { name: 'repo', fullName: 'octocat/repo', htmlUrl: 'https://github.com/octocat/repo', isPrivate: true }, pushed: 'pushed' } });
     if (payload.method === 'githubSearchCode') return send(200, { ok: true, result: { ok: true, total: 1, items: [{ name: 'a.js', path: 'src/a.js', repository: 'o/r', htmlUrl: 'https://github.com/o/r/blob/main/a.js' }] } });
+    if (payload.method === 'githubSetVisibility') return send(200, { ok: true, result: { ok: true, fullName: 'WJulian128/dsh-desktop', htmlUrl: 'https://github.com/WJulian128/dsh-desktop', visibility: 'public', isPrivate: false } });
     if (payload.method === 'gitPush') return send(200, { ok: true, result: { ok: true, output: 'pushed main' } });
     if (payload.method === 'gitPull') return send(200, { ok: true, result: { ok: true, output: 'Already up to date.' } });
     if (payload.method === 'gitMerge') return send(200, { ok: true, result: { ok: true, output: 'Fast-forward' } });
@@ -145,6 +146,7 @@ try {
   check('has dsh_desktop_git_push', names.includes('dsh_desktop_git_push'), '');
   check('has dsh_desktop_git_pull', names.includes('dsh_desktop_git_pull'), '');
   check('has dsh_desktop_git_merge', names.includes('dsh_desktop_git_merge'), '');
+  check('has dsh_desktop_github_set_visibility', names.includes('dsh_desktop_github_set_visibility'), '');
 
   const doctor = await client.callTool({ name: 'dsh_desktop_system_doctor', arguments: {} });
   const doctorText = (doctor.content || []).map((c) => c.text || '').join('\n');

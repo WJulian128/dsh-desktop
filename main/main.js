@@ -1838,7 +1838,33 @@ function startRpc() {
     try {
       st.branch = await gitCurrentBranch(state.workspace);
     } catch { st.branch = null; }
+    // 远程仓库可见性（有 origin 且已登录时查一次 API）
+    try {
+      const auth = githubOps.readAuth(state.dshHome);
+      const fullName = githubOps.parseRepoFullName(st.remote || '');
+      st.repoFullName = fullName;
+      if (auth && fullName) {
+        const repo = await githubOps.getRepo(auth.token, fullName);
+        if (repo) {
+          st.visibility = repo.visibility;
+          st.repoHtmlUrl = repo.htmlUrl;
+          st.isPrivate = repo.isPrivate;
+        }
+      }
+    } catch { /* 查询失败不影响其余状态 */ }
     return { ok: true, ...st };
+  });
+
+  rpc.on('githubSetVisibility', async (params) => {
+    const auth = githubOps.readAuth(state.dshHome);
+    if (!auth) return { ok: false, error: '未登录 GitHub' };
+    const remote = await gitRemoteList(state.workspace);
+    const fullName = githubOps.parseRepoFullName(remote.ok ? String(remote.output || '') : '');
+    if (!fullName) return { ok: false, error: '未关联 GitHub 远程仓库（先 github_remote_setup）' };
+    const isPrivate = params && params.isPrivate !== undefined ? Boolean(params.isPrivate) : true;
+    const repo = await githubOps.setRepoVisibility(auth.token, fullName, isPrivate);
+    broadcastPanelRefresh('git');
+    return { ok: true, ...repo };
   });
 
   rpc.on('githubLoginStart', async () => {
@@ -2155,11 +2181,38 @@ function registerDesktopFeatureIpc() {
     try {
       st.branch = await gitCurrentBranch(state.workspace);
     } catch { st.branch = null; }
+    try {
+      const auth = githubOps.readAuth(state.dshHome);
+      const fullName = githubOps.parseRepoFullName(st.remote || '');
+      st.repoFullName = fullName;
+      if (auth && fullName) {
+        const repo = await githubOps.getRepo(auth.token, fullName);
+        if (repo) {
+          st.visibility = repo.visibility;
+          st.repoHtmlUrl = repo.htmlUrl;
+          st.isPrivate = repo.isPrivate;
+        }
+      }
+    } catch { /* 查询失败不影响其余状态 */ }
     return { ok: true, ...st };
   };
 
   ipcMain.handle('dsh:github-status', async () => {
     try { return await githubStatusPayload(); } catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
+  });
+
+  ipcMain.handle('dsh:github-visibility-set', async (_event, payload) => {
+    try {
+      const auth = githubOps.readAuth(state.dshHome);
+      if (!auth) return { ok: false, error: '未登录 GitHub' };
+      const remote = await gitRemoteList(state.workspace);
+      const fullName = githubOps.parseRepoFullName(remote.ok ? String(remote.output || '') : '');
+      if (!fullName) return { ok: false, error: '未关联 GitHub 远程仓库' };
+      const isPrivate = payload && payload.isPrivate !== undefined ? Boolean(payload.isPrivate) : true;
+      const repo = await githubOps.setRepoVisibility(auth.token, fullName, isPrivate);
+      broadcastPanelRefresh('git');
+      return { ok: true, ...repo };
+    } catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
   });
 
   // 用系统浏览器打开外链（GitHub 验证页等）
