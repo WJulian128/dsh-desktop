@@ -166,7 +166,8 @@ function saveMap(workspace, opts) {
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   }
-  return { ok: true, scanned: scan.scanned, skipped: scan.skipped, tracked: Object.keys(scan.files).length };
+  // tracked 返回合并后的当前跟踪总数（增量补图时 scanned=本次重读数，tracked=总数）
+  return { ok: true, scanned: scan.scanned, skipped: scan.skipped, tracked: Object.keys(mergedFiles).length };
 }
 
 /**

@@ -24,12 +24,12 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - 纯 Node 模块（无 Electron 依赖）放 main/ 顶层并配 scripts/ 单测：project-map、workspace-guard、agents-norms、git-runner、subagent-stream、subagent-center、memory-store、usage、notify 等
 - MCP 工具走 desktop-rpc（Bearer token）；RPC handler 在 main.js startRpc() 注册，MCP 侧在 mcp-server.mjs registerTool
 - 会话存储：$DSH_HOME/sessions/<workspaceKey>/<sessionId>/session.jsonl.zstd（拼接 zstd 帧 JSONL）；主会话 dir 名带 session- 前缀，子代理 session 记录有 origin:'subagent'+parentSession
+- Git 基线：2026-08-24 已 git init（main 分支），.gitignore 排除 node_modules/release/build/dump/日志/.dsh 运行时状态（.dsh/project-map.md 例外入仓共享）；任务块完成用 git_commit 落提交可回溯
 
 ## 已知陷阱
 - PowerShell 管道 + Select-Object -First 1 会提前关管道杀死原生命令导致 $LASTEXITCODE=-1（用 Out-String 完整消费）
 - 子代理会话文件也是"最新写入"，notify/memory 需排除子代理（isSubagentSessionFile）
 - git 操作用 git-runner.js 白名单封装（main/git-runner.js），不要手拼危险命令
-- 本项目工作区本身无 .git（如需可 mcp__dsh_desktop__git_init 初始化）
 
 ## 重点文件职责摘要
 - main/project-map.js：项目代码地图存储与 stale 指纹判定（.dsh/project-map.md + state.json）
@@ -42,3 +42,4 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - packages/settings-update/client.js：SchedPanel 按 props.sessionId 过滤子代理（parentSession）；EnvPanel 含 Git/项目地图/编辑占用行
 - renderer/git-diff.html：Git 变更窗（分支/提交/回滚/复制 + 其他会话占用警告横幅）
 - scripts/test-project-map.js、test-workspace-guard.js：新模块单测
+- .gitignore：排除依赖/构建产物/本地运行时状态；保留 .dsh/project-map.md 共享
