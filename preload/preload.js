@@ -91,6 +91,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   activityGet: () => ipcRenderer.invoke('dsh:activity-get'),
   // 截图发送被拒（纯文本模型）时的补救：本地识别图片返回描述
   describeImagePath: (path) => ipcRenderer.invoke('dsh:describe-image-path', { path }),
+  // 截图补救（主进程执行）：识别全部图片并经官方 RPC 直发进当前会话（免疫页面重载/重渲染）
+  screenshotRescue: (payload) => ipcRenderer.invoke('dsh:screenshot-rescue', payload),
 
   // 截图 / 附件 / 新对话接续
   screenshot: () => ipcRenderer.invoke('dsh:screenshot'),

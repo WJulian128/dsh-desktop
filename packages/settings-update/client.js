@@ -1314,6 +1314,15 @@ window.__ModuleLoader__.load({
           if (shots[0].done) return; // 防重复
           shots.forEach((s) => { s.done = true; });
           debug('start', { n: shots.length });
+          // 过滤：用户已从草稿删掉的图不再识别（draftImages 只返回仍存活的附件）
+          let finalShots = [];
+          try {
+            if (convService && typeof convService.draftImages === 'function') {
+              finalShots = shots.filter((s) => convService.draftImages(s.imageIds).length === s.imageIds.length);
+            }
+          } catch { finalShots = []; }
+          if (!finalShots.length) finalShots = shots; // 全被拒绝流程释放 → 兜底全用
+          debug('filtered', { kept: finalShots.length, total: shots.length });
           // 先保存用户输入的话（补救不能把用户的话挤掉：用户原话在前，截图描述在后）
           let userText = '';
           try {
@@ -1326,90 +1335,29 @@ window.__ModuleLoader__.load({
               for (const id of s.imageIds) { if (typeof inputActions.removeImage === 'function') inputActions.removeImage(id); }
             }
           } catch { /* 忽略 */ }
-          // 逐张准备识别：缓存直用；否则现场启动 describeImagePath
-          for (let i = 0; i < shots.length; i++) {
-            const s = shots[i];
-            const cached = descCache.current[s.path];
-            if (cached && cached.description) {
-              s.desc = cached.description;
-              s.elapsedMs = cached.elapsedMs;
-              s.model = cached.model;
-            }
-            if (!s.desc && !s.descPending && d && typeof d.describeImagePath === 'function') {
-              s.descPending = d.describeImagePath(s.path)
-                .then((r) => {
-                  s.desc = r && r.ok && typeof r.description === 'string' && r.description.trim() ? r.description.trim() : null;
-                  s.elapsedMs = r && r.elapsedMs;
-                  s.model = r && r.model;
-                  debug('shot-done', { i: i + 1, descLen: s.desc ? s.desc.length : 0 });
-                })
-                .catch((err) => { s.desc = null; debug('shot-error', { i: i + 1, err: String((err && err.message) || err).slice(0, 80) }); });
-            }
+          // 占位提示：识别与发送都在主进程完成，页面不参与发送
+          const placeholder = '\u3010\u622a\u56fe\u3011\u89c6\u89c9\u8bc6\u522b\u4e2d\u2026\uff08\u5171 ' + finalShots.length +
+            ' \u5f20\uff0c\u5b8c\u6210\u540e\u81ea\u52a8\u53d1\u9001\u5230\u5bf9\u8bdd\uff09';
+          const act0 = latestInputActions();
+          if (act0 && typeof act0.setDraft === 'function') {
+            try { act0.setDraft(userText ? userText + '\n\n' + placeholder : placeholder); } catch { /* 忽略 */ }
           }
-          const partOf = (s, i) => {
-            if (s.desc) {
-              const model = s.model ? ' ' + s.model : '';
-              const secs = s.elapsedMs ? Math.round(s.elapsedMs / 1000) + 's' : '';
-              return '\u3010\u622a\u56fe ' + (i + 1) + '\u3011\u5df2\u901a\u8fc7' + model + ' \u8bc6\u522b' + (secs ? '\uff08\u8017\u65f6 ' + secs + '\uff09' : '') + '\uff1a\n' + s.desc +
-                '\n\uff08\u539f\u56fe\u4fdd\u7559\u5728\uff1a' + s.path + '\uff1b\u5982\u9700\u67e5\u770b\u5c40\u90e8\u7ec6\u8282\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u505a region \u653e\u5927\u8bc6\u522b\uff09';
-            }
-            return '\u3010\u622a\u56fe ' + (i + 1) + '\u3011\u5df2\u4fdd\u5b58\u539f\u56fe\uff1a' + s.path +
-              '\n\uff08\u8bc6\u522b\u5931\u8d25/\u8d85\u65f6\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u91cd\u65b0\u8bc6\u522b\uff0c\u6216\u7528 region \u5c40\u90e8\u653e\u5927\u67e5\u770b\u7ec6\u8282\uff09';
-          };
-          let finished = false;
-          const finish = () => {
-            // ⚠️ 不能用 disposed 守卫：inputActions 每次渲染都是新对象，effect 会随渲染
-            // 重建并置 disposed=true——识别完成后自动发送会被静默掐掉（占位永远卡在输入框）。
-            // 幂等只靠 finished；取最新 inputActions；setDraft/submit 各带重试与日志。
-            if (finished) return;
-            finished = true;
-            const parts = shots.map(partOf);
-            const finalText = userText ? userText + '\n\n' + parts.join('\n\n') : parts.join('\n\n');
-            const mark = finalText.slice(0, 30);
-            const ensureDraftAndSubmit = (attempt) => {
-              const actNow = latestInputActions();
-              // setDraft 是异步 React 状态：先核对草稿是否已是最终文本，缺了就重设
-              let cur = '';
-              try {
-                const el2 = document.querySelector('textarea[data-phase]');
-                cur = el2 ? String(el2.value !== undefined ? el2.value : (el2.textContent || '')).trim() : '';
-              } catch { cur = ''; }
-              if (cur.indexOf(mark) === -1 && actNow && typeof actNow.setDraft === 'function') {
-                try { actNow.setDraft(finalText); debug('redraft', attempt); } catch (err) { debug('setdraft-error', String((err && err.message) || err).slice(0, 80)); }
-              }
-              setTimeout(() => {
-                const actNow2 = latestInputActions();
-                if (actNow2 && typeof actNow2.submit === 'function') {
-                  try { actNow2.submit(); debug('submit', attempt); } catch (err) { debug('submit-error', String((err && err.message) || err).slice(0, 80)); }
-                } else {
-                  debug('submit-noop', attempt);
+          // 主进程补救：识别全部图片 + 官方 RPC 直发进当前会话——免疫页面重载/重渲染，
+          // 根治"识别完不自动发送"（此前页面侧 Promise/输入框提交随重渲染被掐死）。
+          if (d && typeof d.screenshotRescue === 'function') {
+            d.screenshotRescue({ shots: finalShots.map((s) => ({ path: s.path })), userText })
+              .then((r) => {
+                debug('rescue-rpc', { ok: !!(r && r.ok), sent: !!(r && r.sent) });
+                // 消息已由主进程发出：清掉占位草稿
+                const act2 = latestInputActions();
+                if (act2 && typeof act2.setDraft === 'function') {
+                  try { act2.setDraft(''); } catch { /* 忽略 */ }
                 }
-              }, 250);
-            };
-            setTimeout(() => ensureDraftAndSubmit(1), 300);
-            // 复核：提交后草稿应清空；若最终文本还在（submit 被吞）→ 再补一轮
-            setTimeout(() => {
-              let v2 = '';
-              try {
-                const el3 = document.querySelector('textarea[data-phase]');
-                v2 = el3 ? String(el3.value !== undefined ? el3.value : (el3.textContent || '')).trim() : '';
-              } catch { v2 = ''; }
-              if (v2 && v2.indexOf(mark) !== -1) ensureDraftAndSubmit(2);
-              else debug('draft-cleared', '');
-            }, 2500);
-          };
-          const pending = shots.filter((s) => s.descPending);
-          if (!pending.length) { finish(); return; }
-          // 识别进行中：占位明确提示"请勿手动发送"（全部完成后自动替换并发送）
-          const placeholder = '\u3010\u622a\u56fe\u3011\u89c6\u89c9\u8bc6\u522b\u4e2d\u2026\uff08\u5171 ' + shots.length +
-            ' \u5f20\uff0c\u5b8c\u6210\u540e\u81ea\u52a8\u53d1\u9001\uff0c\u8bf7\u52ff\u624b\u52a8\u53d1\u9001\uff09';
-          if (inputActions && typeof inputActions.setDraft === 'function') {
-            try { inputActions.setDraft(userText ? userText + '\n\n' + placeholder : placeholder); } catch { /* 忽略 */ }
+              })
+              .catch((err) => debug('rescue-rpc-error', String((err && err.message) || err).slice(0, 120)));
+          } else {
+            debug('rescue-rpc-missing', '');
           }
-          // 全部识别完成（或 90s 总超时）→ 汇总发送；失败/超时的图走原图引用兜底
-          const overallTimeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), 90000));
-          Promise.race([Promise.all(pending.map((p) => p.then(() => null).catch(() => null))), overallTimeout])
-            .then(() => { debug('all-done', ''); finish(); });
         };
         let observer = null;
         try {

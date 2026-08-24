@@ -3152,8 +3152,11 @@ function backupOptions(includeCredentials, includeSessions) {
 /* ---------- 截图 / 附件 / 新对话接续 ---------- */
 
 function closeCaptureWindow() {
-  // 隐藏而非销毁：窗口创建在软件渲染下很慢，复用消除再次点击截图按钮的等待
+  // 隐藏而非销毁：窗口创建在软件渲染下很慢，复用消除再次点击截图按钮的等待。
+  // 隐藏前先摘掉 alwaysOnTop（软件渲染下全屏置顶窗直接 hide 偶发残留黑帧——
+  // 用户反馈的"截完图偶发黑屏"），z-order 变化会强制一次干净的合成。
   if (captureWindow && !captureWindow.isDestroyed()) {
+    try { captureWindow.setAlwaysOnTop(false); } catch { /* 忽略 */ }
     try { captureWindow.hide(); } catch { /* 忽略 */ }
   }
 }
@@ -3700,6 +3703,66 @@ async function getSessionActivity() {
   }
 }
 ipcMain.handle('dsh:activity-get', () => getSessionActivity());
+
+/**
+ * 截图补救（主进程执行，免疫页面重载/重渲染）：页面检测到图片发送被拒后调用，
+ * 主进程逐张识别 → 汇总文本 → 官方 RPC 直发进当前会话。
+ * 不再依赖页面 JS 存续（此前"识别完不自动发送"的顽疾根因就是页面状态竞争）。 */
+ipcMain.handle('dsh:screenshot-rescue', async (_event, payload) => {
+  const shots = Array.isArray(payload && payload.shots) ? payload.shots : [];
+  const userText = String((payload && payload.userText) || '');
+  if (!shots.length) return { ok: false, error: 'shots 为空' };
+  const results = [];
+  for (let i = 0; i < shots.length; i++) {
+    const s = shots[i];
+    const pathStr = String((s && s.path) || '');
+    let desc = null;
+    let elapsedMs = 0;
+    let model = '';
+    try {
+      const vision = settings.get('vision');
+      if (vision && vision.enabled !== false && pathStr) {
+        const vb = visionBroadcast();
+        await ensureOllamaMode();
+        vb.send({ phase: 'start' });
+        const t0 = Date.now();
+        desc = await describeImage(effectiveVision(vision), {
+          path: pathStr,
+          dshHome: state.dshHome,
+          stream: true,
+          onDelta: (text) => vb.send({ phase: 'delta', text }),
+        });
+        elapsedMs = Date.now() - t0;
+        model = vision.model ? String(vision.model) : '';
+        vb.send({ phase: 'done', elapsedMs, chars: desc.length });
+        logLine('[rescue] \u8bc6\u522b\u5b8c\u6210 ' + (i + 1) + '/' + shots.length + '\uff1a' + elapsedMs + 'ms');
+      }
+    } catch (err) {
+      logLine('[rescue] \u8bc6\u522b\u5931\u8d25 ' + (i + 1) + '/' + shots.length + '\uff1a' + ((err && err.message) || err));
+      desc = null;
+    }
+    results.push({ path: pathStr, desc: desc && String(desc).trim() ? String(desc).trim() : null, elapsedMs, model });
+  }
+  const parts = results.map((r, i) => {
+    if (r.desc) {
+      const modelPart = r.model ? ' ' + r.model : '';
+      const secs = r.elapsedMs ? Math.round(r.elapsedMs / 1000) + 's' : '';
+      return '\u3010\u622a\u56fe ' + (i + 1) + '\u3011\u5df2\u901a\u8fc7' + modelPart + ' \u8bc6\u522b' + (secs ? '\uff08\u8017\u65f6 ' + secs + '\uff09' : '') + '\uff1a\n' + r.desc +
+        '\n\uff08\u539f\u56fe\u4fdd\u7559\u5728\uff1a' + r.path + '\uff1b\u5982\u9700\u67e5\u770b\u5c40\u90e8\u7ec6\u8282\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u505a region \u653e\u5927\u8bc6\u522b\uff09';
+    }
+    return '\u3010\u622a\u56fe ' + (i + 1) + '\u3011\u5df2\u4fdd\u5b58\u539f\u56fe\uff1a' + r.path +
+      '\n\uff08\u8bc6\u522b\u5931\u8d25/\u8d85\u65f6\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u91cd\u65b0\u8bc6\u522b\uff0c\u6216\u7528 region \u5c40\u90e8\u653e\u5927\u67e5\u770b\u7ec6\u8282\uff09';
+  });
+  const finalText = userText ? userText + '\n\n' + parts.join('\n\n') : parts.join('\n\n');
+  let sent = false;
+  try {
+    sent = await rpcPromptCurrentSession(finalText);
+  } catch (err) {
+    logLine('[rescue] \u76f4\u53d1\u5931\u8d25\uff1a' + ((err && err.message) || err));
+  }
+  logLine('[rescue] \u76f4\u53d1\u7ed3\u679c\uff1a' + sent);
+  return { ok: sent, sent, textLen: finalText.length };
+});
 
 /** 页面侧补救通道：纯文本模型下截图发送被 harness 拒绝（不支持图片）时，
  *  页面插件调用本通道做本地识别，把描述文字重新填入并发送。
