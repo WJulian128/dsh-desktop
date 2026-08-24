@@ -57,7 +57,7 @@
 双击 **`启动桌面端.bat`**，或在终端里：
 
 ```bat
-cd /d C:\Users\user\Desktop\DeepseekHarness
+cd /d 你的工作区路径
 npm install   （仅首次）
 npm start
 ```

@@ -2,13 +2,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { workspaceSessionKey, scanWorkspaceUsage, resolveDeepSeekKey } = require('../main/usage.js');
-const workspace = 'C:/Users/user/Desktop/DeepseekHarness';
+const workspace = path.join(__dirname, '..');
+const dshHome = path.join(os.homedir(), '.dsh');
 const key = workspaceSessionKey(workspace);
 console.log('key:', key);
-const root = path.join('C:/Users/user/.dsh', 'sessions', key);
+const root = path.join(dshHome, 'sessions', key);
 console.log('root exists:', fs.existsSync(root));
 if (fs.existsSync(root)) console.log('entries:', fs.readdirSync(root).join(', '));
-const r = scanWorkspaceUsage({ dshHome: 'C:/Users/user/.dsh', workspace, usagePrices: null });
+const r = scanWorkspaceUsage({ dshHome, workspace, usagePrices: null });
 console.log('sessions:', r.sessions.length, 'total:', JSON.stringify(r.total));
 for (const s of r.sessions.slice(0, 3)) console.log('-', s.sessionId, s.title || '', s.error || '');
 

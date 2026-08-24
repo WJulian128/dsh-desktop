@@ -50,8 +50,8 @@ fs.writeFileSync(path.join(dshHome, 'memory', 'memory.jsonl'),
   '{"type":"entity","name":"dsh-desktop","entityType":"project","observations":["用 electron-builder 打包"]}\n' +
   '{"type":"relation","from":"dsh-desktop","to":"electron-builder","relationType":"builds-with"}\n', 'utf8');
 // 会话目录（includeSessions 时备份）
-mk(path.join(dshHome, 'sessions', '--C-Users-user-Desktop-Test--', 'session-abc'));
-fs.writeFileSync(path.join(dshHome, 'sessions', '--C-Users-user-Desktop-Test--', 'session-abc', 'session.jsonl.zstd'), '\x28\xb5\x2f\xfd dummy', 'utf8');
+mk(path.join(dshHome, 'sessions', '--C-Users-test-user-Desktop-Test--', 'session-abc'));
+fs.writeFileSync(path.join(dshHome, 'sessions', '--C-Users-test-user-Desktop-Test--', 'session-abc', 'session.jsonl.zstd'), '\x28\xb5\x2f\xfd dummy', 'utf8');
 mk(path.join(installDir, 'node_modules', '@deepseek-ai', 'dsh'));
 fs.writeFileSync(path.join(installDir, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ version: '0.1.0-rc.6' }), 'utf8');
 
@@ -88,7 +88,7 @@ check('includes credentials when requested', fs.existsSync(path.join(stagingCred
 const stagingSess = path.join(root, 'staging-sess');
 mk(stagingSess);
 collectBackupFiles(stagingSess, { ...opts, includeSessions: true });
-check('includes sessions when requested', fs.existsSync(path.join(stagingSess, 'dsh-home/sessions', '--C-Users-user-Desktop-Test--', 'session-abc', 'session.jsonl.zstd')), '');
+check('includes sessions when requested', fs.existsSync(path.join(stagingSess, 'dsh-home/sessions', '--C-Users-test-user-Desktop-Test--', 'session-abc', 'session.jsonl.zstd')), '');
 check('includes memory.jsonl with sessions', fs.existsSync(path.join(stagingSess, 'dsh-home/memory/memory.jsonl')), '');
 
 // 3. exportBackup → zip
@@ -139,7 +139,7 @@ mk(newHome2); mk(newWs2);
 importBackup(sessZip, { settingsFile: path.join(newRoot2, 'settings.json'), dshHome: newHome2, workspace: newWs2 });
 const restored = fs.readFileSync(path.join(newHome2, 'memory', 'memory.jsonl'), 'utf8');
 check('import restores memory.jsonl', restored.includes('"name":"dsh-desktop"') && restored.includes('builds-with'), '');
-check('import restores sessions', fs.existsSync(path.join(newHome2, 'sessions', '--C-Users-user-Desktop-Test--', 'session-abc', 'session.jsonl.zstd')), '');
+check('import restores sessions', fs.existsSync(path.join(newHome2, 'sessions', '--C-Users-test-user-Desktop-Test--', 'session-abc', 'session.jsonl.zstd')), '');
 
 // 清理
 fs.rmSync(root, { recursive: true, force: true });

@@ -8,12 +8,13 @@
  *      （可用 DSH_HOME / DSH_WORKSPACE 环境变量覆盖默认值）
  */
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { decompressFrames, workspaceSessionKey } = require('./usage');
 const { listSubagentStream, streamSince } = require('./subagent-stream');
 
-const DSH_HOME = process.env.DSH_HOME || 'C:\\Users\\user\\.dsh';
-const WORKSPACE = process.env.DSH_WORKSPACE || 'C:\\Users\\user\\Desktop\\DeepseekHarness';
+const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+const WORKSPACE = process.env.DSH_WORKSPACE || path.join(__dirname, '..');
 const ROOT = path.join(DSH_HOME, 'sessions', workspaceSessionKey(WORKSPACE));
 
 const clip = (s, n) => {

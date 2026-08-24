@@ -2,8 +2,8 @@
 # desktop bat version uses (--expose-internals + real patch + real DSH_HOME),
 # verify HTTP 200, then clean up. ASCII only.
 $ErrorActionPreference = 'Stop'
-$repo = 'C:\Users\user\Desktop\DeepseekHarness'
-$patch = 'C:\Users\user\AppData\Roaming\dsh-desktop\web.patch.yml'
+$repo = Split-Path -Parent $PSScriptRoot
+$patch = Join-Path $env:APPDATA 'dsh-desktop\web.patch.yml'
 $out = Join-Path $env:TEMP 'devboot.out.log'
 $err = Join-Path $env:TEMP 'devboot.err.log'
 $env:DSH_DESKTOP_RPC_URL = 'http://127.0.0.1:19999'

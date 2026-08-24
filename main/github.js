@@ -187,6 +187,21 @@ async function renameRepo(token, fullName, newName) {
   return { name: j.name, fullName: j.full_name, htmlUrl: j.html_url, cloneUrl: j.clone_url, isPrivate: j.private };
 }
 
+/** 切换仓库可见性（private: true 私有 / false 完全公开）。公开前注意历史提交不可撤销（fork 会留存）。 */
+async function setRepoVisibility(token, fullName, isPrivate) {
+  const parts = String(fullName || '').split('/');
+  const owner = encodeURIComponent(String(parts[0] || '').trim());
+  const repoName = encodeURIComponent(String(parts[1] || '').trim());
+  if (!owner || !repoName) throw new Error('fullName 需为 owner/repo 形式');
+  const res = await api(token, 'PATCH', '/repos/' + owner + '/' + repoName, { private: isPrivate === true });
+  if (res.status !== 200) {
+    const err = res.json && (res.json.message || res.json.errors);
+    throw new Error('切换可见性失败：' + JSON.stringify(err).slice(0, 200));
+  }
+  const j = res.json;
+  return { name: j.name, fullName: j.full_name, htmlUrl: j.html_url, isPrivate: j.private, visibility: j.visibility };
+}
+
 /** 代码搜索（需要登录；q 为 GitHub 代码搜索语法）。 */
 async function searchCode(token, q, perPage = 10) {
   const res = await api(token, 'GET', '/search/code?q=' + encodeURIComponent(q) + '&per_page=' + Math.min(perPage, 20));

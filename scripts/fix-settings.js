@@ -14,7 +14,7 @@ try {
 if (!data || typeof data !== 'object') data = {};
 
 const next = {
-  workspace: typeof data.workspace === 'string' && data.workspace ? data.workspace : 'C:\\Users\\user\\Desktop\\DeepseekHarness',
+  workspace: typeof data.workspace === 'string' && data.workspace ? data.workspace : os.homedir(),
   autoUpdate: data.autoUpdate !== false,
   silentAutoUpdate: data.silentAutoUpdate === true,
   checkPrereleases: data.checkPrereleases === true,
