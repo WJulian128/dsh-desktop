@@ -172,6 +172,17 @@ async function createRepo(token, { name, description, isPrivate = true }) {
   return { name: j.name, fullName: j.full_name, htmlUrl: j.html_url, cloneUrl: j.clone_url, sshUrl: j.ssh_url, isPrivate: j.private };
 }
 
+/** 重命名仓库（PATCH /repos/{fullName}）。返回新仓库信息（cloneUrl 会变化，需同步 git remote set-url）。 */
+async function renameRepo(token, fullName, newName) {
+  const res = await api(token, 'PATCH', '/repos/' + encodeURIComponent(fullName), { name: newName });
+  if (res.status !== 200) {
+    const err = res.json && (res.json.message || res.json.errors);
+    throw new Error('重命名失败：' + JSON.stringify(err).slice(0, 200));
+  }
+  const j = res.json;
+  return { name: j.name, fullName: j.full_name, htmlUrl: j.html_url, cloneUrl: j.clone_url, isPrivate: j.private };
+}
+
 /** 代码搜索（需要登录；q 为 GitHub 代码搜索语法）。 */
 async function searchCode(token, q, perPage = 10) {
   const res = await api(token, 'GET', '/search/code?q=' + encodeURIComponent(q) + '&per_page=' + Math.min(perPage, 20));
@@ -217,6 +228,7 @@ module.exports = {
   clearAuth,
   whoami,
   createRepo,
+  renameRepo,
   searchCode,
   status,
   suggestRepoName,

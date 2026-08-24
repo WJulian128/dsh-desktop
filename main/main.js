@@ -2109,11 +2109,16 @@ function registerDesktopFeatureIpc() {
     try {
       // 非 git 目录快速返回（避免每次轮询都拉起 3 条 git 命令）
       if (!fs.existsSync(path.join(state.workspace, '.git'))) {
+        logLine('[git-summary] not a git repo（workspace=' + state.workspace + '）');
         return { ok: true, output: '# 当前目录不是 Git 仓库', workspace: state.workspace, notGit: true };
       }
       const output = await gitSummary(state.workspace);
+      // 诊断日志：面板「非 Git 工作区」排查用（输出不含敏感信息）
+      const head = String(output || '').split('\n').filter((l) => l.trim()).slice(0, 3).join(' | ');
+      logLine('[git-summary] ok，head=' + head.slice(0, 200));
       return { ok: true, output, workspace: state.workspace };
     } catch (err) {
+      logLine('[git-summary] 失败：' + ((err && err.message) || err));
       return { ok: false, error: (err && err.message) || String(err) };
     }
   });

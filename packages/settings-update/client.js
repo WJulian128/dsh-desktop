@@ -1907,7 +1907,8 @@ window.__ModuleLoader__.load({
       return visionStreamStore.items;
     }
 
-    /** 解析 dsh:git-summary 输出（# git status / ## 分支...上游 [ahead N, behind M] / 变更行）。非 Git 仓库返回 null。 */
+    /** 解析 dsh:git-summary 输出（# git status / ## 分支...上游 [ahead N, behind M] / 变更行）。非 Git 仓库返回 null。
+     *  分支展示：只取 ... 前的本地分支名（main...origin/main → main）；无上游括号时同样处理。 */
     function parseGitSummary(output) {
       const lines = String(output || '').split('\n');
       const start = lines.findIndex((l) => l.trim() === '# git status');
@@ -1917,15 +1918,12 @@ window.__ModuleLoader__.load({
       const branchLine = block.find((l) => l.startsWith('## '));
       if (!branchLine) return null;
       const raw = branchLine.slice(3);
+      const localBranch = raw.split('...')[0].split(/\s/)[0].trim() || raw;
       const m = raw.match(/\[ahead (\d+)(?:, behind (\d+))?\]/) || raw.match(/\[behind (\d+)\]/);
-      let ahead = 0, behind = 0, branch = raw;
-      if (m) {
-        ahead = m[1] ? Number(m[1]) : 0;
-        behind = m[2] ? Number(m[2]) : 0;
-        branch = raw.replace(/\s*\[.*\]$/, '').split('...')[0];
-      }
+      const ahead = m && m[1] ? Number(m[1]) : 0;
+      const behind = m && m[2] ? Number(m[2]) : 0;
       const changed = block.filter((l) => l.trim() && !l.startsWith('## ')).length;
-      return { branch, ahead, behind, changed };
+      return { branch: localBranch, ahead, behind, changed };
     }
 
     /** 接续按钮已并入状态胶囊行（MCP 胶囊右侧）。 */
