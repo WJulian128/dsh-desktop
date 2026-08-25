@@ -1051,6 +1051,45 @@ server.registerTool(
   },
 );
 
+// ---- 外部机器人桥：企业微信推送 / 机器人状态 ----
+
+server.registerTool(
+  "dsh_desktop_wechat_push",
+  {
+    title: "企业微信推送",
+    description:
+      "把文本推送到配置的企业微信群机器人（markdown 格式，≤4096 字节自动截断）。单向推送：" +
+      "只能发到群、收不到群消息。用于主动汇报/定时推送/任务完成通知。需先在桌面端设置页「机器人」分区配置 webhook 并开启。",
+    inputSchema: z.object({
+      text: z.string().describe("要推送的文本（markdown）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("wechatPush", { text: args.text });
+    if (!result.ok) throw new Error(result.error || "推送失败");
+    return text("已推送到企业微信群");
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_bot_status",
+  {
+    title: "机器人状态",
+    description: "查询 QQ 机器人与企业微信推送的配置与连接状态。",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const result = await call("botStatus");
+    return text(
+      "QQ 机器人：" + (result.qq && result.qq.configured ? "已配置" : "未配置") +
+        (result.qq && result.qq.enabled ? "、已启用、状态 " + result.qq.state + (result.qq.detail ? "（" + result.qq.detail + "）" : "") : "、未启用") +
+      "\n企业微信：配置 " + (result.wechat && result.wechat.configured ? "有 webhook" : "无 webhook") +
+        (result.wechat && result.wechat.enabled ? "、已启用" : "、未启用") +
+        (result.wechat && result.wechat.pushOnComplete ? "、每轮完成自动推送" : ""),
+    );
+  },
+);
+
 // ---- UI 内省（读桌面端自己窗口的 DOM：结构化定位/精确点击/读文本/自窗口截图） ----
 
 server.registerTool(

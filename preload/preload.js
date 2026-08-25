@@ -95,6 +95,12 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   screenshotRescue: (payload) => ipcRenderer.invoke('dsh:screenshot-rescue', payload),
   // 截图补救进度：主进程每完成一张推送 { done, total }，页面更新输入框占位文案
   onRescueProgress: (cb) => subscribe('dsh:rescue-progress', cb),
+  // 机器人桥：QQ 网关 / 企业微信推送的配置读写与测试
+  botConfig: () => ipcRenderer.invoke('dsh:bot-config'),
+  botConfigSet: (payload) => ipcRenderer.invoke('dsh:bot-config-set', payload),
+  botTestQq: () => ipcRenderer.invoke('dsh:bot-test-qq'),
+  botTestWechat: () => ipcRenderer.invoke('dsh:bot-test-wechat'),
+  onBotState: (cb) => subscribe('dsh:bot-state', cb),
 
   // 截图 / 附件 / 新对话接续
   screenshot: () => ipcRenderer.invoke('dsh:screenshot'),

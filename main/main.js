@@ -19,7 +19,10 @@ const { generateWebPatch, ensureClientPackageLink, providerEnvKey } = require('.
 const { runDshPlugin } = require('./plugin-cli');
 const { scanWorkspaceUsage, queryBalance, workspaceSessionKey, resolvePriceTier, decompressFrames, resolveDeepSeekKey } = require('./usage');
 const { describeImage, testVision, modelSupportsVision, readCurrentModel } = require('./vision');
-const { startCompletionWatcher } = require('./notify');
+const { startCompletionWatcher, findNewestSessionFile } = require('./notify');
+const { QqGateway } = require('./bot-gateway/qq-gateway');
+const { wechatPush, formatReplyMarkdown } = require('./bot-gateway/wechat-push');
+const { ReplyBridge, extractReplyAfter } = require('./bot-gateway/reply-bridge');
 const { inQuietHours } = require('./quiet-hours');
 const memoryStore = require('./memory-store');
 const { startAutoMemory } = require('./memory-watch');
@@ -429,6 +432,12 @@ const PATCH_FILE = path.join(app.getPath('userData'), 'web.patch.yml');
 // token 每次启动随机生成，仅通过 dsh web 子进程环境变量传递。
 let rpc = null;
 let rpcToken = crypto.randomBytes(32).toString('hex');
+
+/* ---------- 外部机器人桥（QQ 官方机器人 + 企业微信推送） ---------- */
+let qqGateway = null;   // QqGateway 实例（null = 未启动）
+let botBridge = null;   // ReplyBridge 实例（QQ 启用时创建）
+let botQqState = 'idle'; // QQ 网关状态：idle/connecting/ready/disconnected/error
+let botQqDetail = '';
 
 const state = {
   phase: 'starting',
@@ -1399,6 +1408,31 @@ function checkUpdateGuard() {
 function startRpc() {
   rpc = new DesktopRpcServer({ token: rpcToken, logger: logLine });
   rpc.on('getState', async () => ({ ...state, currentModel: currentModelCached() }));
+  // 企业微信推送（MCP 工具 dsh_desktop_wechat_push：agent 主动推送到群）
+  rpc.on('wechatPush', async (params) => {
+    const cfg = readBotConfig();
+    const text = params && params.text ? String(params.text).slice(0, 4000) : '';
+    if (!cfg.wechat.enabled || !cfg.wechat.webhookUrl) return { ok: false, error: '企业微信推送未启用或未配置 webhook' };
+    if (!text) return { ok: false, error: '推送内容为空' };
+    return wechatPush({ webhookUrl: cfg.wechat.webhookUrl, content: text, log: logLine });
+  });
+  // 机器人状态（MCP 工具 dsh_desktop_bot_status）
+  rpc.on('botStatus', async () => {
+    const cfg = readBotConfig();
+    return {
+      qq: {
+        enabled: cfg.qq.enabled && !!cfg.qq.appId && !!cfg.qq.appSecret,
+        configured: !!(cfg.qq.appId && cfg.qq.appSecret),
+        state: botQqState,
+        detail: botQqDetail,
+      },
+      wechat: {
+        enabled: cfg.wechat.enabled && !!cfg.wechat.webhookUrl,
+        configured: !!cfg.wechat.webhookUrl,
+        pushOnComplete: cfg.wechat.pushOnComplete,
+      },
+    };
+  });
   // 模型可用：供 MCP 工具 dsh_desktop_list_providers 查询（主模型派发子代理时选择 provider/思考强度）
   rpc.on('providersList', async () => ({ ok: true, providers: providersListPayload() }));
   rpc.on('checkUpdates', async (params) => {
@@ -2179,6 +2213,51 @@ function registerMcpPluginIpc() {
 /* ---------- 桌面功能 IPC ---------- */
 
 function registerDesktopFeatureIpc() {
+  /* ---- 机器人桥：QQ 官方机器人 + 企业微信推送 ---- */
+  ipcMain.handle('dsh:bot-config', async () => {
+    const cfg = readBotConfig();
+    return {
+      qq: { appId: cfg.qq.appId, appSecret: cfg.qq.appSecret, enabled: cfg.qq.enabled },
+      wechat: { webhookUrl: cfg.wechat.webhookUrl, enabled: cfg.wechat.enabled, pushOnComplete: cfg.wechat.pushOnComplete },
+      qqState: botQqState,
+      qqDetail: botQqDetail,
+    };
+  });
+  ipcMain.handle('dsh:bot-config-set', async (_event, payload) => {
+    const p = payload || {};
+    if (p.qq) {
+      const cur = settings.get('qqBot') || {};
+      settings.set('qqBot', {
+        appId: p.qq.appId !== undefined ? String(p.qq.appId).trim() : (cur.appId || ''),
+        appSecret: p.qq.appSecret !== undefined ? String(p.qq.appSecret).trim() : (cur.appSecret || ''),
+        enabled: p.qq.enabled !== undefined ? p.qq.enabled === true : (cur.enabled === true),
+      });
+    }
+    if (p.wechat) {
+      const cur = settings.get('wechatPush') || {};
+      settings.set('wechatPush', {
+        webhookUrl: p.wechat.webhookUrl !== undefined ? String(p.wechat.webhookUrl).trim() : (cur.webhookUrl || ''),
+        enabled: p.wechat.enabled !== undefined ? p.wechat.enabled === true : (cur.enabled === true),
+        pushOnComplete: p.wechat.pushOnComplete !== undefined ? p.wechat.pushOnComplete === true : (cur.pushOnComplete === true),
+      });
+    }
+    await applyBotConfig();
+    const cfg = readBotConfig();
+    return { ok: true, qqState: botQqState, qqDetail: botQqDetail, configured: !!(cfg.qq.appId && cfg.qq.appSecret) };
+  });
+  // 测试 QQ 连接：返回当前网关状态（网关异步启动，页面轮询 onBotState 看状态流转）
+  ipcMain.handle('dsh:bot-test-qq', async () => ({ ok: qqGateway !== null, state: botQqState, detail: botQqDetail }));
+  // 测试企微推送：直接推一条测试消息
+  ipcMain.handle('dsh:bot-test-wechat', async () => {
+    const cfg = readBotConfig();
+    if (!cfg.wechat.webhookUrl) return { ok: false, error: '\u672a\u914d\u7f6e webhook \u5730\u5740' };
+    return wechatPush({
+      webhookUrl: cfg.wechat.webhookUrl,
+      content: '\u2705 DSH \u684c\u9762\u7aef\u6d4b\u8bd5\u63a8\u9001\uff08\u914d\u7f6e\u6b63\u5e38\uff09',
+      log: logLine,
+    });
+  });
+
   ipcMain.handle('dsh:git-summary', async () => {
     if (!state.workspace) return { ok: false, error: '\u5c1a\u672a\u9009\u62e9\u5de5\u4f5c\u533a' };
     try {
@@ -3613,6 +3692,165 @@ async function rpcPromptCurrentSession(text) {
   return false;
 }
 
+/* ---------- 外部机器人桥：QQ 官方机器人（双向）+ 企业微信群推送（单向） ---------- */
+
+/** 读取机器人配置（settings：qqBot / wechatPush）。 */
+function readBotConfig() {
+  const qq = settings.get('qqBot') || {};
+  const wechat = settings.get('wechatPush') || {};
+  return {
+    qq: {
+      appId: String(qq.appId || '').trim(),
+      appSecret: String(qq.appSecret || '').trim(),
+      enabled: qq.enabled === true,
+    },
+    wechat: {
+      webhookUrl: String(wechat.webhookUrl || '').trim(),
+      enabled: wechat.enabled === true,
+      pushOnComplete: wechat.pushOnComplete === true,
+    },
+  };
+}
+
+/** 快速读当前会话 id（机器人桥用；页面已就绪场景 3s 内读到）。 */
+async function getCurrentSessionIdFast() {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return null;
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      try {
+        const v = await mainWindow.webContents.executeJavaScript(
+          "(() => { try { const r = localStorage.getItem('dsh.sessions.current'); if (!r) return null; const o = JSON.parse(r); return (o && typeof o.sessionId === 'string') ? o.sessionId : null; } catch { return null; } })()",
+        );
+        if (v && typeof v === 'string') return v;
+      } catch { /* 页面未就绪 */ }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  } catch { /* 忽略 */ }
+  return null;
+}
+
+/** 长文本按 maxLen 分段（QQ 单条文本上限 2000 字符，留余量）。 */
+function splitChunks(text, maxLen = 1800) {
+  const s = String(text || '');
+  const out = [];
+  for (let i = 0; i < s.length; i += maxLen) out.push(s.slice(i, i + maxLen));
+  return out;
+}
+
+/** 处理一条 QQ 消息：占位回复（被动窗口内）→ 注入会话 → 等回复 → 分段回推。 */
+async function handleQqMessage(ev) {
+  try {
+    const nick = ev.authorName || ev.authorId || '';
+    const label = ev.kind === 'c2c' ? 'QQ \u5355\u804a' : ev.kind === 'group' ? 'QQ \u7fa4' : 'QQ \u9891\u9053';
+    const text = '\u3010' + label + '\u00b7' + nick + '\u3011' + ev.text;
+    // 被动窗口内先回占位：C2C 被动窗口 5 分钟、群 AT 5 秒——agent 慢回复若错过窗口会
+    // 消耗主动消息额度（C2C 每月仅 4 条/用户），占位先把额度守住。
+    try {
+      if (ev.kind === 'c2c') {
+        await qqGateway.sendText({ kind: 'c2c', openid: ev.authorId }, '\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406\u2026');
+      } else if (ev.kind === 'group') {
+        await qqGateway.sendText({ kind: 'group', groupOpenid: ev.groupOpenid, msgId: ev.id }, '\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406\u2026');
+      }
+    } catch (err) { logLine('[qq-bot] \u5360\u4f4d\u56de\u590d\u5931\u8d25\uff1a' + (err && err.message ? err.message : err)); }
+    const reply = await botBridge.process(text);
+    const target = ev.kind === 'c2c'
+      ? { kind: 'c2c', openid: ev.authorId }
+      : ev.kind === 'group'
+        ? { kind: 'group', groupOpenid: ev.groupOpenid }
+        : { kind: 'channel', channelId: ev.channelId };
+    if (reply) {
+      for (const chunk of splitChunks(reply)) {
+        const res = await qqGateway.sendText(target, chunk);
+        if (!res.ok) logLine('[qq-bot] \u56de\u590d\u53d1\u9001\u5931\u8d25\uff1a' + (res && res.error));
+        await new Promise((r) => setTimeout(r, 500)); // 频控间隔
+      }
+    } else {
+      try { await qqGateway.sendText(target, '\u5904\u7406\u8d85\u65f6\u6216\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u5728\u684c\u9762\u7aef\u67e5\u770b\u3002'); } catch { /* 忽略 */ }
+    }
+  } catch (err) {
+    logLine('[qq-bot] \u6d88\u606f\u5904\u7406\u5f02\u5e38\uff1a' + (err && err.message ? err.message : err));
+  }
+}
+
+/** 按配置启动/停止 QQ 网关与回复桥。 */
+async function applyBotConfig() {
+  const cfg = readBotConfig();
+  const sessionsRoot = path.join(state.dshHome, 'sessions');
+  if (cfg.qq.enabled && cfg.qq.appId && cfg.qq.appSecret) {
+    if (qqGateway && (qqGateway.appId !== cfg.qq.appId || qqGateway.appSecret !== cfg.qq.appSecret)) {
+      qqGateway.stop();
+      qqGateway = null;
+    }
+    if (!qqGateway) {
+      qqGateway = new QqGateway({
+        appId: cfg.qq.appId,
+        appSecret: cfg.qq.appSecret,
+        log: logLine,
+        onState: (s, detail) => {
+          botQqState = s;
+          botQqDetail = detail || '';
+          broadcastBotState();
+        },
+        onEvent: (ev) => { handleQqMessage(ev).catch(() => {}); },
+      });
+      botBridge = new ReplyBridge({
+        sessionsRoot,
+        injectPrompt: (text) => rpcPromptCurrentSession(text),
+        getSessionId: () => getCurrentSessionIdFast(),
+        log: logLine,
+      });
+      logLine('[qq-bot] \u7f51\u5173\u5df2\u521b\u5efa\uff08appId=' + cfg.qq.appId.slice(0, 6) + '\u2026\uff09');
+    }
+    qqGateway.start().catch((err) => logLine('[qq-bot] \u542f\u52a8\u5f02\u5e38\uff1a' + (err && err.message ? err.message : err)));
+  } else {
+    if (qqGateway) { qqGateway.stop(); qqGateway = null; }
+    botQqState = 'idle';
+    botQqDetail = '';
+    broadcastBotState();
+  }
+}
+
+/** 广播 QQ 网关状态给页面（设置页状态显示）。 */
+function broadcastBotState() {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('dsh:bot-state', { qqState: botQqState, qqDetail: botQqDetail });
+    }
+  } catch { /* 忽略 */ }
+}
+
+/** 提取最新会话的最后一条 assistant 回复文本（用于企微推送；无则 null）。 */
+function extractLatestReplyText() {
+  try {
+    const sessionsRoot = path.join(state.dshHome, 'sessions');
+    const active = findNewestSessionFile(sessionsRoot, { skipSubagent: true });
+    if (!active) return null;
+    const text = decompressFrames(fs.readFileSync(active.file));
+    const r = extractReplyAfter(text, 0);
+    return r.done ? r.text : null;
+  } catch { return null; }
+}
+
+/** 任务完成时把最新回复推送到企业微信群（开关 pushOnComplete）。 */
+async function pushLatestReplyToWechat() {
+  try {
+    const cfg = readBotConfig();
+    if (!cfg.wechat.enabled || !cfg.wechat.pushOnComplete || !cfg.wechat.webhookUrl) return;
+    const reply = extractLatestReplyText();
+    if (!reply) return;
+    const res = await wechatPush({
+      webhookUrl: cfg.wechat.webhookUrl,
+      content: formatReplyMarkdown(reply),
+      log: logLine,
+    });
+    if (!res.ok) logLine('[wechat-push] \u4efb\u52a1\u5b8c\u6210\u63a8\u9001\u5931\u8d25\uff1a' + (res.error || ''));
+  } catch (err) {
+    logLine('[wechat-push] \u4efb\u52a1\u5b8c\u6210\u63a8\u9001\u5f02\u5e38\uff1a' + (err && err.message ? err.message : err));
+  }
+}
+
+
 /** 重启后自动接续（handoff 兜底）：无显式接续任务时，若 .dsh/handoff.md 存在，
  *  自动向当前会话发送接续指令（与"点击接续"同文案）——重启后零操作无缝继续。
  *  防重复：进程内只注入一次（web-ready 可能触发多次，且消息落盘有延迟，
@@ -4499,10 +4737,15 @@ async function main() {
           showNotification({ title: 'DSH \u684c\u9762\u7aef \u2014 \u4efb\u52a1\u5b8c\u6210', body: 'harness \u5df2\u5b8c\u6210\u672c\u8f6e\u5de5\u4f5c\uff0c\u56de\u5230\u7a97\u53e3\u67e5\u770b\u7ed3\u679c\u3002' });
         }
         if (mainWindow && !mainWindow.isDestroyed() && !focused) mainWindow.flashFrame(true);
+        // 企业微信群推送（开关 pushOnComplete）：每轮真实完成时把回复推到群
+        pushLatestReplyToWechat().catch(() => {});
       },
     });
   }
   mainWindow.on('focus', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.flashFrame(false); });
+
+  // 外部机器人桥：QQ 网关（双向）/ 企业微信推送（单向）按保存的配置启动
+  try { applyBotConfig().catch((err) => logLine('[qq-bot] \u521d\u59cb\u5316\u5931\u8d25\uff1a' + (err && err.message ? err.message : err))); } catch (err) { /* 忽略 */ }
 
   // 自动记忆：把历史记忆从 npx 缓存迁移到受控位置（仅首次），然后监听"整轮对话
   // 彻底完成"，自动抽取值得沉淀的知识（项目事实/决策/踩坑/偏好）写入记忆图谱。
@@ -4620,6 +4863,7 @@ async function main() {
       if (completionWatcher) { try { completionWatcher.stop(); } catch { /* 忽略 */ } }
       if (autoMemoryWatcher) { try { autoMemoryWatcher.stop(); } catch { /* 忽略 */ } }
       if (contextWatcher) { try { contextWatcher.stop(); } catch { /* 忽略 */ } }
+      if (qqGateway) { try { qqGateway.stop(); } catch { /* 忽略 */ } qqGateway = null; }
       ollama.stop();
       if (rpc) await rpc.stop().catch(() => {});
       if (harness) await harness.stop().catch(() => {});

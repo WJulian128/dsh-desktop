@@ -2631,6 +2631,138 @@ window.__ModuleLoader__.load({
         h("p", { style: st.hint }, "分支工作流：较大任务用 git_checkout 开 feature 分支，完成后 git_merge 合并回主分支并 git_push；日常小改直接提交推送。登录后模型还可用 dsh_desktop_github_search_code 搜索 GitHub 代码参考实现。"));
     }
 
+    /* ================= 机器人（QQ 官方机器人 + 企业微信推送） ================= */
+    function BotSection() {
+      const [cfg, setCfg] = react.useState(null);
+      const [draft, setDraft] = react.useState(null);
+      const [qqState, setQqState] = react.useState('idle');
+      const [qqDetail, setQqDetail] = react.useState('');
+      const [busy, setBusy] = react.useState(false);
+      const [msg, setMsg] = react.useState(null);
+      const [showQqGuide, setShowQqGuide] = react.useState(false);
+      const [showWxGuide, setShowWxGuide] = react.useState(false);
+
+      const refresh = react.useCallback(() => {
+        const d = api();
+        if (!d || !d.botConfig) return;
+        d.botConfig().then((r) => {
+          if (!r) return;
+          setCfg(r);
+          setDraft((prev) => prev || { qq: { ...(r.qq || {}) }, wechat: { ...(r.wechat || {}) } });
+          setQqState(r.qqState || 'idle');
+          setQqDetail(r.qqDetail || '');
+        }).catch(() => {});
+      }, []);
+
+      react.useEffect(() => {
+        refresh();
+        const d = api();
+        const off = d && d.onBotState
+          ? d.onBotState((p) => {
+              if (p) { setQqState(p.qqState || 'idle'); setQqDetail(p.qqDetail || ''); }
+            })
+          : null;
+        return () => { if (off) { try { off(); } catch { /* 忽略 */ } } };
+      }, [refresh]);
+
+      if (!api()) {
+        return h("div", { style: st.card }, h("p", { style: st.hint }, "此设置页仅可在 DSH 桌面端中打开。"));
+      }
+
+      const showMsg = (tone, text) => setMsg({ tone, text });
+      const setD = (part, key) => (e) => setDraft((prev) => ({
+        ...(prev || {}),
+        [part]: { ...((prev && prev[part]) || {}), [key]: e.target.value },
+      }));
+
+      const save = async () => {
+        setBusy(true); showMsg(null);
+        try {
+          const r = await api().botConfigSet({ qq: (draft && draft.qq) || {}, wechat: (draft && draft.wechat) || {} });
+          if (!r || !r.ok) { showMsg('error', (r && r.error) || '保存失败'); return; }
+          if (r.qqState === 'connecting') showMsg('ok', '已保存，QQ 正在连接…（状态行会实时更新）');
+          else if (r.qqState === 'ready') showMsg('ok', '已保存，QQ 已连接');
+          else if (r.qqState === 'error') showMsg('error', '已保存，但连接失败：' + (r.qqDetail || ''));
+          else showMsg('ok', '已保存');
+          refresh();
+        } catch (err) { showMsg('error', String((err && err.message) || err)); }
+        finally { setBusy(false); }
+      };
+
+      const testWx = async () => {
+        setBusy(true); showMsg(null);
+        try {
+          const r = await api().botTestWechat();
+          if (r && r.ok) showMsg('ok', '测试消息已推送到企业微信群（去群里查看）');
+          else showMsg('error', (r && r.error) || '推送失败');
+        } catch (err) { showMsg('error', String((err && err.message) || err)); }
+        finally { setBusy(false); }
+      };
+
+      const qq = (draft && draft.qq) || {};
+      const wx = (draft && draft.wechat) || {};
+      const stateColor = qqState === 'ready' ? '#3fb950'
+        : qqState === 'connecting' ? '#d29922'
+          : (qqState === 'error' || qqState === 'disconnected') ? '#f85149' : '#8b949e';
+      const stateText = qqState === 'ready' ? '已连接' + (qqDetail ? '（' + qqDetail + '）' : '')
+        : qqState === 'connecting' ? '连接中…'
+          : qqState === 'disconnected' ? '已断开（自动重连中）'
+            : qqState === 'error' ? '连接失败：' + (qqDetail || '') : '未连接';
+
+      const field = (label, control) => h("label", { style: st.field }, h("span", { style: st.fieldLabel }, label), control);
+      const switchRow = (label, value, onChange) => h("div", { style: st.row },
+        h("span", { style: st.label }, label),
+        h("button", {
+          type: "button",
+          onClick: () => onChange(!value),
+          style: { ...st.btn, ...st.btnSmall },
+        }, value ? '已开启' : '已关闭'));
+
+      const guideBlock = (open, setOpen, title, lines) => h("div", { style: st.card },
+        btn((open ? '收起' : '展开') + '注册/配置指引：' + title, () => setOpen(!open), { small: true, key: 'g' }),
+        open ? h("div", { style: st.output }, lines.join('\n')) : null);
+
+      return h("div", { style: st.grid },
+        h("div", { style: st.card },
+          h("div", { style: st.title }, "QQ 机器人（双向对话）"),
+          h("div", { style: st.note }, "官方开放平台机器人：你在 QQ 单聊/群里 @ 它发消息 → 消息进入桌面端当前会话 → agent 回复自动推回 QQ。沙盒即可测试，无需公网服务器。"),
+          h("div", { style: st.row },
+            dot(stateColor, 'qq'),
+            h("span", { style: st.value }, stateText)),
+          field("AppID", h("input", { type: "text", style: st.input, value: qq.appId || '', placeholder: '在 q.qq.com 开发设置里获取', onChange: setD('qq', 'appId') })),
+          field("AppSecret", h("input", { type: "password", style: st.input, value: qq.appSecret || '', placeholder: '生成后复制到这里（仅保存在本机）', onChange: setD('qq', 'appSecret') })),
+          switchRow("启用 QQ 机器人", !!qq.enabled, (v) => setDraft((prev) => ({ ...(prev || {}), qq: { ...(prev && prev.qq), enabled: v } }))),
+          h("div", { style: st.actions },
+            btn('保存并连接', save, { primary: true, disabled: busy }),
+            btn('测试状态', async () => { const r = await api().botTestQq(); showMsg(r && r.state === 'ready' ? 'ok' : 'error', r && r.state === 'ready' ? 'QQ 已连接（' + r.state + '）' : '当前状态：' + ((r && r.state) || '未知') + (r && r.detail ? '（' + r.detail + '）' : '') + '；未连接请先保存并开启'); }, { disabled: busy }))),
+        guideBlock(showQqGuide, setShowQqGuide, 'QQ 官方机器人（免费）', [
+          '1. 打开 q.qq.com 用 QQ 扫码登录 → 开放平台 → 创建机器人应用（个人主体即可，免费）；',
+          '2. 应用详情 →「开发设置」：复制 AppID；AppSecret 点「生成」后立即复制保存（只显示一次）；',
+          '3. 「沙箱配置」：添加测试频道 + 你自己的测试 QQ 号（沙盒内即可收发消息，无需审核）；',
+          '4. 回到本页填入 AppID/AppSecret → 开启 → 保存并连接 → 状态显示「已连接」即成功；',
+          '5. 测试：用测试 QQ 号给机器人发单聊消息，或到沙箱频道 @ 它；回复会先到桌面端会话再推回 QQ；',
+          '6. 群聊能力需在「发布设置」提交上线（审核约 1-3 个工作日），通过后群里 @ 机器人即可对话。',
+        ]),
+        h("div", { style: st.card },
+          h("div", { style: st.title }, "企业微信推送（单向）"),
+          h("div", { style: st.note }, "群机器人 webhook：agent 可把消息推送到微信群（定时汇报 / 任务完成通知）。注意：收不到群里人说的话，群内对话请用 QQ 机器人。"),
+          field("Webhook 地址", h("input", { type: "text", style: st.input, value: wx.webhookUrl || '', placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…', onChange: setD('wechat', 'webhookUrl') })),
+          switchRow("启用企业微信推送", !!wx.enabled, (v) => setDraft((prev) => ({ ...(prev || {}), wechat: { ...(prev && prev.wechat), enabled: v } }))),
+          switchRow("任务完成自动推送（每轮回复完成后推到群）", !!wx.pushOnComplete, (v) => setDraft((prev) => ({ ...(prev || {}), wechat: { ...(prev && prev.wechat), pushOnComplete: v } }))),
+          h("div", { style: st.hint }, "模型也可以随时用 MCP 工具 dsh_desktop_wechat_push 主动推送任意文本到群。"),
+          h("div", { style: st.actions },
+            btn('保存配置', save, { primary: true, disabled: busy }),
+            btn('测试推送', testWx, { disabled: busy }))),
+        guideBlock(showWxGuide, setShowWxGuide, '企业微信群机器人（免费）', [
+          '1. 企业微信（手机或 PC 端）打开任意群 → 右上角「…」→「群机器人」→「添加机器人」；',
+          '2. 给机器人起名（如「DSH 助手」）→ 创建后复制 Webhook 地址（https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…）；',
+          '3. 粘贴到上方并保存 → 点「测试推送」，群里应收到一条测试消息；',
+          '4. 开启「任务完成自动推送」后，桌面端每轮 agent 回复完成都会自动推到该群（markdown，超长自动截断）；',
+          '5. 限制：每机器人 20 条/分钟；只能推送、不能接收群消息。',
+        ]),
+        msg ? h("p", { style: msg.tone === 'ok' ? st.msgOk : st.msgErr }, msg.text) : null);
+    }
+
     /* ================= 定时任务 / 提醒 ================= */
     function ScheduleSection() {
       const [tasks, setTasks] = react.useState([]);
@@ -3200,6 +3332,7 @@ window.__ModuleLoader__.load({
       registerSection("desktop", 90, () => "桌面端", DesktopSection);
       registerSection("mcp", 85, () => "插件与 MCP", McpSection);
       registerSection("github", 78, () => "GitHub 与 Git", GithubSection);
+      registerSection("bot", 76, () => "机器人", BotSection);
       registerSection("memory", 74, () => "记忆与子代理", MemorySection);
       registerSection("schedule", 73, () => "定时任务", ScheduleSection);
       registerSection("system", 72, () => "系统环境", SystemSection);

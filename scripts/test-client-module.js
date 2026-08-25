@@ -74,7 +74,7 @@ const overlays = registrations.filter((r) => r.slot === 'shell.overlay').map((r)
 const composerDock = registrations.filter((r) => r.slot === 'conversation.composer.dock').map((r) => r.registration);
 const inputLeft = registrations.filter((r) => r.slot === 'conversation.input.left').map((r) => r.registration);
 const headerActions = registrations.filter((r) => r.slot === 'conversation.session.header.actions').map((r) => r.registration);
-check('registers 9 settings.section entries', sections.length === 9, 'count=' + sections.length);
+check('registers 10 settings.section entries (含机器人)', sections.length === 10, 'count=' + sections.length);
 check('no shell.overlay occupants (panels live in composer dock)', overlays.length === 0, 'count=' + overlays.length);
 check('status pill + right panels (env+sched always-on) in composer.dock',
   composerDock.length === 2 &&
@@ -99,7 +99,7 @@ for (const reg of sections) {
     JSON.stringify({ id: options.id, order: options.order }));
   byId[options.id] = reg;
 }
-for (const id of ['desktop', 'mcp', 'memory', 'schedule', 'system', 'backup', 'usage', 'providers']) {
+for (const id of ['desktop', 'mcp', 'github', 'bot', 'memory', 'schedule', 'system', 'backup', 'usage', 'providers']) {
   check('has ' + id + ' section', !!byId[id], '');
   if (byId[id]) {
     check('section ' + id + ' label non-empty', typeof byId[id].options.label() === 'string' && byId[id].options.label().length > 0, byId[id].options.label());
