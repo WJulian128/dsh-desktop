@@ -19,10 +19,16 @@ function check(name, ok, detail) {
 
 // 1. classifyLastRecord 纯函数
 const rec = (type) => ({ type, time: 1 });
-check('last assistant/message => round-done',
-  classifyLastRecord([rec('user/message'), rec('assistant/chunk'), rec('assistant/message')]) === 'round-done', '');
+check('assistant/message + step/end => round-done',
+  classifyLastRecord([rec('user/message'), rec('assistant/chunk'), rec('assistant/message'), rec('step/end')]) === 'round-done', '');
+check('assistant/message without step/end => round-active (tool-prefix segment, NOT done)',
+  classifyLastRecord([rec('user/message'), rec('assistant/chunk'), rec('assistant/message')]) === 'round-active', '');
 check('last tool/call => round-active',
   classifyLastRecord([rec('user/message'), rec('assistant/message'), rec('tool/call'), rec('tool/result')]) === 'round-active', '');
+check('last tool-call-chunks => round-active',
+  classifyLastRecord([rec('user/message'), rec('assistant/message'), rec('tool-call-chunks')]) === 'round-active', '');
+check('step/end then more activity => round-active',
+  classifyLastRecord([rec('assistant/message'), rec('step/end'), rec('tool/call')]) === 'round-active', '');
 check('last assistant/chunk => round-active',
   classifyLastRecord([rec('user/message'), rec('assistant/chunk')]) === 'round-active', '');
 check('last user/message => user-pending',
@@ -33,7 +39,7 @@ check('empty array => empty', classifyLastRecord([]) === 'empty', '');
 check('null input => empty', classifyLastRecord(null) === 'empty', '');
 // 非对话记录（标题更新等）不应干扰判定
 check('title after final answer still round-done',
-  classifyLastRecord([rec('assistant/message'), rec('session/title')]) === 'round-done', '');
+  classifyLastRecord([rec('assistant/message'), rec('step/end'), rec('session/title')]) === 'round-done', '');
 
 // 2. findNewestSessionFile：最新写入优先（跨工作区、跨会话）
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-notify-'));
@@ -91,8 +97,20 @@ fs.writeFileSync(doneFile, encodeSession([
   { type: 'user/message', time: 2, data: { content: [{ type: 'text', text: 'hi' }] } },
   { type: 'assistant/chunk', time: 3, data: { chunk: { type: 'usage', usage: {} } } },
   { type: 'assistant/message', time: 4, data: { message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } } },
+  { type: 'step/end', time: 5, data: {} },
 ]));
-check('scanRoundDoneFile true on final answer', scanRoundDoneFile(doneFile) === true, '');
+check('scanRoundDoneFile true on final answer + step/end', scanRoundDoneFile(doneFile) === true, '');
+// 工具调用前的文字段落（无 step/end）：判定必须拒绝——这是"思考完成就误弹通知"的实证场景
+const prefixOnlyDir = path.join(zroot, '--ws-c--', 'sess-prefix');
+fs.mkdirSync(prefixOnlyDir, { recursive: true });
+const prefixOnlyFile = path.join(prefixOnlyDir, 'session.jsonl.zstd');
+fs.writeFileSync(prefixOnlyFile, encodeSession([
+  { type: 'session', id: 's3', createdAt: 1 },
+  { type: 'user/message', time: 2, data: { content: [{ type: 'text', text: 'hi' }] } },
+  { type: 'assistant/chunk', time: 3, data: { chunk: { type: 'usage', usage: {} } } },
+  { type: 'assistant/message', time: 4, data: { message: { role: 'assistant', content: [{ type: 'text', text: 'thinking...' }] } } },
+]));
+check('scanRoundDoneFile false on tool-prefix message without step/end', scanRoundDoneFile(prefixOnlyFile) === false, '');
 const activeDir = path.join(zroot, '--ws-c--', 'sess-active');
 fs.mkdirSync(activeDir, { recursive: true });
 const activeFile = path.join(activeDir, 'session.jsonl.zstd');
@@ -115,6 +133,7 @@ const payload = encodeSession([
   { type: 'session', id: 'w', createdAt: 1 },
   { type: 'user/message', time: 2, data: { content: [{ type: 'text', text: 'hi' }] } },
   { type: 'assistant/message', time: 3, data: { message: { role: 'assistant', content: [{ type: 'text', text: 'final' }] } } },
+  { type: 'step/end', time: 4, data: {} },
 ]);
 let completed = 0;
 const watcher = startCompletionWatcher({ sessionsDir: watchRoot, onComplete: () => { completed++; }, idleMs: 300, log: () => {} });

@@ -26,7 +26,7 @@ function encodeSession(records) {
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-scan-worker-'));
 const wsRoot = path.join(root, '--ws--');
 
-// 会话 1：整轮完成（尾部 assistant/message）
+// 会话 1：整轮完成（尾部 assistant/message + step/end 回合结束帧）
 const doneDir = path.join(wsRoot, 'sess-done');
 fs.mkdirSync(doneDir, { recursive: true });
 const doneFile = path.join(doneDir, 'session.jsonl.zstd');
@@ -35,6 +35,7 @@ fs.writeFileSync(doneFile, encodeSession([
   { type: 'user/message', time: 100, data: { content: [{ type: 'text', text: '你好' }] } },
   { type: 'assistant/chunk', time: 200, data: { chunk: { type: 'usage', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 20 } } } },
   { type: 'assistant/message', time: 300, data: { message: { role: 'assistant', content: [{ type: 'text', text: '完成' }] } } },
+  { type: 'step/end', time: 400, data: {} },
 ]));
 
 // 会话 2：回合进行中（尾部 tool/call）

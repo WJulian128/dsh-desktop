@@ -12,32 +12,37 @@ const { decompressFrames } = require('./usage');
  * 判定"本轮对话彻底完成"而不是"某个小任务完成"：
  *  1. 写入突发结束后静默 idleMs（默认 5 秒）——原有启发式；
  *  2. 突发至少 3 次写入且跨越 1.5 秒（避免"新建空白会话"误报）；
- *  3. 会话流尾部的最后一条对话记录必须是 assistant/message（最终答复）。
- *     若尾部是 tool/call、tool/result 或 assistant/chunk，说明回合仍在进行
- *     （工具往返中的短暂停顿），不触发通知。
+ *  3. 会话流尾部的最后一条对话记录必须是 assistant/message（最终答复），
+ *     且其后紧跟 harness 的回合结束帧 step/end——工具调用前的文字段落
+ *     （assistant/message 后是 tool/call）没有 step/end，绝不误判为完成。
+ *     若尾部是 tool/call、tool/result、assistant/chunk 或 tool-call-chunks，
+ *     说明回合仍在进行（工具往返中的短暂停顿），不触发通知。
  */
 
 /** 参与"回合状态"判定的记录类型。 */
 const CONVERSATION_TYPES = new Set([
-  'user/message', 'assistant/message', 'assistant/chunk', 'tool/call', 'tool/result',
+  'user/message', 'assistant/message', 'assistant/chunk', 'tool/call', 'tool/result', 'tool-call-chunks',
 ]);
 
 /**
  * 根据解析后的记录列表判定回合状态（纯函数，便于测试）。
  * 从尾部向前找最后一条对话记录：
- *  - assistant/message → 'round-done'（最终答复已落盘）
- *  - tool/call | tool/result | assistant/chunk → 'round-active'（回合还在进行）
+ *  - assistant/message 且其后有 step/end 回合结束帧 → 'round-done'（最终答复已落盘）
+ *  - assistant/message 但后无 step/end → 'round-active'（工具调用前的文字段落，回合未结束）
+ *  - tool/call | tool/result | assistant/chunk | tool-call-chunks → 'round-active'（回合还在进行）
  *  - user/message → 'user-pending'（用户刚发消息，模型尚未回复）
  *  - 无对话记录 → 'empty'
  * @param {Array<object>} records 解析后的记录数组（旧→新）
  */
 function classifyLastRecord(records) {
   if (!Array.isArray(records)) return 'empty';
+  let sawStepEnd = false;
   for (let i = records.length - 1; i >= 0; i--) {
     const r = records[i];
     const type = r && typeof r.type === 'string' ? r.type : '';
+    if (type === 'step/end' || type === 'turn/end') { sawStepEnd = true; continue; } // 回合结束帧（主会话 step/end、子代理 turn/end）：仅标记，继续向前找对话记录
     if (!CONVERSATION_TYPES.has(type)) continue;
-    if (type === 'assistant/message') return 'round-done';
+    if (type === 'assistant/message') return sawStepEnd ? 'round-done' : 'round-active';
     if (type === 'user/message') return 'user-pending';
     return 'round-active';
   }
