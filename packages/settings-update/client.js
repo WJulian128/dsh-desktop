@@ -1310,6 +1310,7 @@ window.__ModuleLoader__.load({
           if (!d || typeof d.clientDebug !== 'function') return;
           try { d.clientDebug({ src: 'rescue', step, val }); } catch { /* 忽略 */ }
         };
+        let rescueUserText = ''; // 补救时用户原话（进度更新占位时保留原话前缀）
         const doRescue = () => {
           const shots = pendingShots.current.slice();
           pendingShots.current = [];
@@ -1333,6 +1334,7 @@ window.__ModuleLoader__.load({
             const v = el ? (el.value !== undefined ? el.value : (el.textContent || '')) : '';
             userText = String(v || '').trim();
           } catch { userText = ''; }
+          rescueUserText = userText;
           try {
             for (const s of shots) {
               for (const id of s.imageIds) { if (typeof inputActions.removeImage === 'function') inputActions.removeImage(id); }
@@ -1351,10 +1353,15 @@ window.__ModuleLoader__.load({
             d.screenshotRescue({ shots: finalShots.map((s) => ({ path: s.path })), userText })
               .then((r) => {
                 debug('rescue-rpc', { ok: !!(r && r.ok), sent: !!(r && r.sent) });
-                // 消息已由主进程发出：清掉占位草稿
+                // 消息已由主进程发出：清掉占位草稿（仅当草稿仍是占位形态——
+                // 用户在识别期间新输入的内容不能动）
                 const act2 = latestInputActions();
                 if (act2 && typeof act2.setDraft === 'function') {
-                  try { act2.setDraft(''); } catch { /* 忽略 */ }
+                  try {
+                    const el2 = document.querySelector('textarea[data-phase]');
+                    const cur2 = el2 ? String((el2.value !== undefined ? el2.value : (el2.textContent || '')) || '') : '';
+                    if (!cur2 || cur2.includes('\u89c6\u89c9\u8bc6\u522b\u4e2d')) act2.setDraft('');
+                  } catch { /* 忽略 */ }
                 }
               })
               .catch((err) => debug('rescue-rpc-error', String((err && err.message) || err).slice(0, 120)));
@@ -1362,15 +1369,21 @@ window.__ModuleLoader__.load({
             debug('rescue-rpc-missing', '');
           }
         };
-        const rejectRe = /\u4e0d\u652f\u6301\u56fe\u7247|\u56fe\u7247\u53d1\u9001\u5931\u8d25/;
+        // 精确匹配 harness 完整拒绝文案（i18n: image.modelUnsupported / image.sendFailed）。
+        // 不能用宽子串：对话流里出现过「不支持图片」等词就误报（日志实测 reject-seen 刷 50+ 条）
+        const rejectRe = /\u5f53\u524d\u6a21\u578b\u4e0d\u652f\u6301\u56fe\u7247|\u56fe\u7247\u53d1\u9001\u5931\u8d25\uff08/;
         let observer = null;
         try {
           observer = new MutationObserver((muts) => {
             for (const m of muts) {
               const nodes = [];
               for (const node of m.addedNodes) nodes.push(node);
-              // toast 常驻复用节点改写文案时没有 addedNodes——characterData 变更检查 target 本身
-              if (m.type === 'characterData' && m.target) nodes.push(m.target);
+              // toast 常驻复用节点改写文案时没有 addedNodes——characterData 变更检查 target 本身；
+              // 仅短文本节点（toast 特征 ≤120 字）：长段落流式渲染逐字变更不再检查，杜绝对话文本误报
+              if (m.type === 'characterData' && m.target && m.target.nodeType === 3) {
+                const raw = m.target.nodeValue;
+                if (typeof raw === 'string' && raw.length > 0 && raw.length <= 120) nodes.push(m.target);
+              }
               for (const node of nodes) {
                 const txt = node && (node.nodeType === 3 || node.nodeType === 1) ? node.textContent : '';
                 if (txt && rejectRe.test(txt)) {
@@ -1415,11 +1428,30 @@ window.__ModuleLoader__.load({
             }
           } catch { /* 忽略 */ }
         }, 800);
+        // 识别进度：主进程每完成一张推送 { done, total } → 实时更新输入框占位
+        // （本地识别可达数分钟，用户必须看到进展；草稿已被用户改写/清空则不再覆盖）
+        const offProgress = (d && typeof d.onRescueProgress === 'function')
+          ? d.onRescueProgress((p) => {
+              try {
+                const done = Number((p && p.done) || 0);
+                const total = Number((p && p.total) || 0);
+                const act = latestInputActions();
+                if (!act || typeof act.setDraft !== 'function') return;
+                const el = document.querySelector('textarea[data-phase]');
+                const cur = el ? String((el.value !== undefined ? el.value : (el.textContent || '')) || '') : '';
+                if (cur && !cur.includes('\u89c6\u89c9\u8bc6\u522b\u4e2d')) return;
+                const ph = '\u3010\u622a\u56fe\u3011\u89c6\u89c9\u8bc6\u522b\u4e2d ' + done + '/' + total +
+                  '\uff08\u5b8c\u6210\u540e\u81ea\u52a8\u53d1\u9001\u5230\u5bf9\u8bdd\uff09';
+                act.setDraft(rescueUserText ? rescueUserText + '\n\n' + ph : ph);
+              } catch { /* 忽略 */ }
+            })
+          : null;
         // 安全阀：120s 后清理（用户没发送则图片保持显示、识别结果丢弃）
         const timeout = setTimeout(() => { pendingShots.current = []; }, 120000);
         return () => {
           clearTimeout(timeout);
           clearInterval(pollTimer);
+          if (offProgress) { try { offProgress(); } catch { /* 忽略 */ } }
           if (observer) { try { observer.disconnect(); } catch { /* 忽略 */ } }
         };
       }, [inputActions]);

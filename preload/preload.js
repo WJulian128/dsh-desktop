@@ -93,6 +93,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   describeImagePath: (path) => ipcRenderer.invoke('dsh:describe-image-path', { path }),
   // 截图补救（主进程执行）：识别全部图片并经官方 RPC 直发进当前会话（免疫页面重载/重渲染）
   screenshotRescue: (payload) => ipcRenderer.invoke('dsh:screenshot-rescue', payload),
+  // 截图补救进度：主进程每完成一张推送 { done, total }，页面更新输入框占位文案
+  onRescueProgress: (cb) => subscribe('dsh:rescue-progress', cb),
 
   // 截图 / 附件 / 新对话接续
   screenshot: () => ipcRenderer.invoke('dsh:screenshot'),

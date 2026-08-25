@@ -3729,18 +3729,29 @@ ipcMain.handle('dsh:screenshot-rescue', async (_event, payload) => {
   const shots = Array.isArray(payload && payload.shots) ? payload.shots : [];
   const userText = String((payload && payload.userText) || '');
   if (!shots.length) return { ok: false, error: 'shots 为空' };
-  const results = [];
-  for (let i = 0; i < shots.length; i++) {
-    const s = shots[i];
+  const vision = settings.get('vision');
+  const visionOk = !!(vision && vision.enabled !== false);
+  if (visionOk) await ensureOllamaMode(); // 先统一确保模式一次（并发时避免重复检测/切换）
+  // 进度广播：每完成一张通知页面更新输入框占位（本地识别可达数分钟，不能干等无反馈）
+  let doneCount = 0;
+  const sendProgress = () => {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('dsh:rescue-progress', { done: doneCount, total: shots.length });
+      }
+    } catch { /* 忽略 */ }
+  };
+  sendProgress();
+  // 并行识别全部截图：Ollama 单实例并发请求共享已加载模型——冷加载只发生一次，
+  // 热态两张（实测单张 25s 级）总耗时接近单张而非相加。map 保序：结果仍按截图顺序排列。
+  const runOne = async (s, i) => {
     const pathStr = String((s && s.path) || '');
     let desc = null;
     let elapsedMs = 0;
     let model = '';
     try {
-      const vision = settings.get('vision');
-      if (vision && vision.enabled !== false && pathStr) {
+      if (visionOk && pathStr) {
         const vb = visionBroadcast();
-        await ensureOllamaMode();
         vb.send({ phase: 'start' });
         const t0 = Date.now();
         desc = await describeImage(effectiveVision(vision), {
@@ -3752,14 +3763,17 @@ ipcMain.handle('dsh:screenshot-rescue', async (_event, payload) => {
         elapsedMs = Date.now() - t0;
         model = vision.model ? String(vision.model) : '';
         vb.send({ phase: 'done', elapsedMs, chars: desc.length });
-        logLine('[rescue] \u8bc6\u522b\u5b8c\u6210 ' + (i + 1) + '/' + shots.length + '\uff1a' + elapsedMs + 'ms');
       }
     } catch (err) {
       logLine('[rescue] \u8bc6\u522b\u5931\u8d25 ' + (i + 1) + '/' + shots.length + '\uff1a' + ((err && err.message) || err));
       desc = null;
     }
-    results.push({ path: pathStr, desc: desc && String(desc).trim() ? String(desc).trim() : null, elapsedMs, model });
-  }
+    doneCount++;
+    sendProgress();
+    logLine('[rescue] \u8bc6\u522b\u5b8c\u6210 ' + (i + 1) + '/' + shots.length + '\uff1a' + elapsedMs + 'ms');
+    return { path: pathStr, desc: desc && String(desc).trim() ? String(desc).trim() : null, elapsedMs, model };
+  };
+  const results = await Promise.all(shots.map((s, i) => runOne(s, i)));
   const parts = results.map((r, i) => {
     if (r.desc) {
       const modelPart = r.model ? ' ' + r.model : '';
