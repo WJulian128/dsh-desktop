@@ -1490,7 +1490,19 @@ function startRpc() {
   });
   rpc.on('switchWorkspace', async (params) => {
     const dir = params && params.path ? String(params.path) : '';
-    if (!dir || !fs.existsSync(dir)) throw new Error('\u5de5\u4f5c\u533a\u76ee\u5f55\u4e0d\u5b58\u5728\uff1a' + dir);
+    if (!dir) throw new Error('\u672a\u6307\u5b9a\u5de5\u4f5c\u533a\u8def\u5f84');
+    // 目录不存在时自动创建（用户想开新工作区时无需先手动建目录；
+    // harness 官方新建工作区要求 realpath 已存在，这里先 mkdir -p 再切换即绕过该限制）
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      throw new Error('\u65e0\u6cd5\u521b\u5efa\u5de5\u4f5c\u533a\u76ee\u5f55\uff08\u68c0\u67e5\u76d8\u7b26\u662f\u5426\u5b58\u5728\u3001\u8def\u5f84\u662f\u5426\u5408\u6cd5\uff09\uff1a' + ((err && err.message) || err));
+    }
+    try {
+      if (!fs.statSync(dir).isDirectory()) throw new Error('not a directory');
+    } catch (err) {
+      throw new Error('\u8def\u5f84\u4e0d\u662f\u76ee\u5f55\uff1a' + dir);
+    }
     settings.set('workspace', dir);
     state.workspace = dir;
     rememberWorkspace(dir);
