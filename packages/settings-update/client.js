@@ -411,6 +411,7 @@ window.__ModuleLoader__.load({
             h("p", { style: st.hint }, "免打扰时段内不弹原生通知（任务完成 / 上下文告警 / 定时任务等），但窗口闪烁与日志照常保留。支持跨午夜，如 23:00-07:00；开始=结束视为全天免打扰。"))),
 
         h(VisionBlock),
+        h(ImageGenBlock),
 
         h("div", { style: st.card },
           row("工作区", h("span", { style: st.value }, (state && state.workspace) || "—")),
@@ -1104,6 +1105,102 @@ window.__ModuleLoader__.load({
             btn("测试连接", test, { disabled: busy }))),
         msg ? h("div", { style: msg.tone === "error" ? st.msgErr : st.msgOk }, msg.text) : null,
         h("p", { style: st.hint }, "图片处理双轨：① 官方多模态模型（deepseek-v4-flash-vision-exp）由 harness 原生接收图片（自动走 Files API 上传并复用），无需本分区配置；② 纯文本模型（deepseek-v4-flash / deepseek-v4-pro）不接收图片，agent 遇到图片附件会调用 mcp__dsh_desktop__describe_image，由本分区配置的视觉模型（Ollama 或其他家）描述后再继续。建议在「桌面端 → 项目说明」里把该用法写进 AGENTS.md。视觉模型仅在纯文本模型遇到图片时被调用，正常对话完全走 DeepSeek。国内服务商需去对应平台申请 apiKey。"));
+    }
+
+    /* ================= 图片生成（云端 OpenAI 兼容 images/generations） ================= */
+    function ImageGenBlock() {
+      const [draft, setDraft] = react.useState({ enabled: false, baseUrl: '', apiKey: '', model: '', size: '1024x1024' });
+      const [hasKey, setHasKey] = react.useState(false);
+      const [busy, setBusy] = react.useState(false);
+      const [msg, setMsg] = react.useState(null);
+      const [showGuide, setShowGuide] = react.useState(false);
+      const [presetId, setPresetId] = react.useState('');
+
+      // 快捷项：国内直连、OpenAI 兼容格式、注册即用
+      const PRESETS = [
+        { id: 'siliconflow', label: '硅基流动 SiliconFlow（推荐：注册送额度，国内直连）', baseUrl: 'https://api.siliconflow.cn/v1', model: 'black-forest-labs/FLUX.1-schnell', size: '1024x1024' },
+        { id: 'dashscope', label: '阿里云百炼（通义万相，compatible-mode）', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'wanx2.1-t2i-turbo', size: '1024x1024' },
+      ];
+
+      react.useEffect(() => {
+        const d = api();
+        if (!d || !d.imageGenConfig) return;
+        d.imageGenConfig().then((r) => {
+          if (!r) return;
+          setHasKey(!!r.apiKey);
+          setDraft({ ...r, apiKey: '' });
+          const hit = PRESETS.find((p) => p.baseUrl === r.baseUrl);
+          setPresetId(hit ? hit.id : '');
+        }).catch(() => {});
+      }, []);
+
+      if (!api()) {
+        return h("div", { style: st.card }, h("p", { style: st.hint }, "此设置页仅可在 DSH 桌面端中打开。"));
+      }
+
+      const showMsg = (tone, text) => setMsg({ tone, text });
+      const setD = (key) => (e) => setDraft((prev) => ({ ...prev, [key]: e.target.value }));
+      const applyPreset = (id) => {
+        const p = PRESETS.find((x) => x.id === id);
+        if (!p) return;
+        setPresetId(id);
+        setDraft((prev) => ({ ...prev, baseUrl: p.baseUrl, model: p.model, size: p.size }));
+      };
+
+      const save = async () => {
+        setBusy(true); showMsg(null);
+        try {
+          const payload = { ...draft };
+          if (!String(payload.apiKey).trim() && hasKey) payload.apiKey = '__keep__';
+          const r = await api().imageGenConfigSet(payload);
+          if (!r || !r.ok) { showMsg('error', (r && r.error) || '保存失败'); return; }
+          setHasKey(true);
+          setDraft((prev) => ({ ...prev, apiKey: '' }));
+          showMsg('ok', '已保存');
+        } catch (err) { showMsg('error', String((err && err.message) || err)); }
+        finally { setBusy(false); }
+      };
+
+      const test = async () => {
+        setBusy(true); showMsg(null);
+        try {
+          const r = await api().imageGenTest();
+          if (r && r.ok) showMsg('ok', '生成成功，已保存到工作区 .dsh-attachments/（文件名 ' + (r.path || '').split(/[\\/]/).pop() + '）');
+          else showMsg('error', (r && r.error) || '生成失败');
+        } catch (err) { showMsg('error', String((err && err.message) || err)); }
+        finally { setBusy(false); }
+      };
+
+      const field = (label, control) => h("label", { style: st.field }, h("span", { style: st.fieldLabel }, label), control);
+
+      return h("div", { style: st.card },
+        h("div", { style: st.groupTitle }, "图片生成（文生图）"),
+        h("div", { style: st.note }, "架构与视觉识别一致：主模型负责写 prompt 与指令，通过 MCP 工具 dsh_desktop_generate_image 调用这里的云端生图模型（OpenAI 兼容 images/generations 接口），图片保存到工作区 .dsh-attachments/。"),
+        h("label", { style: st.field },
+          h("span", { style: st.fieldLabel }, "快捷配置"),
+          h("select", { className: "dsh-set-select", style: st.select, value: presetId, onChange: (e) => applyPreset(e.target.value) },
+            h("option", { value: '' }, '自定义…'),
+            PRESETS.map((p) => h("option", { key: p.id, value: p.id }, p.label)))),
+        field("baseUrl（接口地址）", h("input", { className: "dsh-set-input", style: st.input, value: draft.baseUrl, onChange: setD('baseUrl'), placeholder: 'https://api.siliconflow.cn/v1' })),
+        field("model（生图模型）", h("input", { className: "dsh-set-input", style: st.input, value: draft.model, onChange: setD('model'), placeholder: 'black-forest-labs/FLUX.1-schnell' })),
+        field("size（默认尺寸）", h("input", { className: "dsh-set-input", style: st.input, value: draft.size, onChange: setD('size'), placeholder: '1024x1024' })),
+        field("apiKey" + (hasKey ? "（已保存，留空则不修改）" : ""),
+          h("input", { className: "dsh-set-input", style: st.input, type: "password", value: draft.apiKey, onChange: setD('apiKey'), placeholder: hasKey ? '••••••••' : 'sk-...' })),
+        h("div", { style: st.actions },
+          btn("保存", save, { disabled: busy }),
+          btn("测试生成一张", test, { primary: true, disabled: busy }),
+          btn((showGuide ? '收起' : '展开') + '注册/配置指引', () => setShowGuide(!showGuide), { small: true })),
+        showGuide ? h("div", { style: st.output },
+          [
+            '1. 推荐硅基流动：打开 siliconflow.cn 注册（手机号，约 2 分钟），新用户送体验额度；',
+            '2. 控制台 →「API 密钥」→ 新建密钥复制（sk-...）；',
+            '3. 上方「快捷配置」选「硅基流动 SiliconFlow」自动填好 baseUrl 与模型（FLUX.1-schnell 免费极速）；',
+            '4. 粘贴 apiKey → 保存 → 点「测试生成一张」，成功即图片出现在工作区 .dsh-attachments/；',
+            '5. 之后对主模型说「画一张 xxx」即可：主模型写好 prompt 调 dsh_desktop_generate_image，生成后保存在 .dsh-attachments/ 并可帮你打开查看；',
+            '6. 其他服务商（通义万相 compatible-mode、智谱、OpenAI 官方）只要是 OpenAI 兼容 images/generations 接口都能用；',
+            '7. 计费：FLUX.1-schnell 硅基流动当前免费额度内不限量；通义 wanx 系列约 0.1~0.4 元/张。',
+          ].join('\n')) : null,
+        msg ? h("div", { style: msg.tone === "error" ? st.msgErr : st.msgOk }, msg.text) : null);
     }
 
     /* ================= 用量与账单 ================= */

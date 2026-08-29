@@ -1090,6 +1090,32 @@ server.registerTool(
   },
 );
 
+// ---- 文生图（主模型写 prompt，云端生图模型执行） ----
+
+server.registerTool(
+  "dsh_desktop_generate_image",
+  {
+    title: "文生图",
+    description:
+      "调用配置的云端文生图模型（OpenAI 兼容 images/generations，如硅基流动 FLUX / 通义万相）生成图片。" +
+      "主模型负责写好 prompt（中文即可，描述画面内容/风格/构图），生成结果保存到工作区 .dsh-attachments/ 并返回文件路径。" +
+      "生成后用 dsh_desktop_open_folder 打开附件目录或 read_image 查看。需先在桌面端设置页「图片生成」块配置 baseUrl/apiKey/model。",
+    inputSchema: z.object({
+      prompt: z.string().describe("画面描述 prompt（中文，写清主体/场景/风格/光影/构图）"),
+      size: z.string().optional().describe("尺寸（服务商支持值，如 1024x1024 / 768x1024 / 1440x720；缺省用配置默认）"),
+      n: z.number().optional().describe("生成张数（1-4，默认 1）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("imageGenerate", { prompt: args.prompt, size: args.size, n: args.n });
+    if (!result.ok) throw new Error(result.error || "生成失败");
+    const files = result.files || [];
+    const lines = files.map((f, i) =>
+      "第 " + (i + 1) + " 张已保存：" + f.path + (f.revisedPrompt ? "\n（服务商改写后的 prompt：" + f.revisedPrompt + "）" : ""));
+    return text(lines.join("\n"));
+  },
+);
+
 // ---- UI 内省（读桌面端自己窗口的 DOM：结构化定位/精确点击/读文本/自窗口截图） ----
 
 server.registerTool(

@@ -101,6 +101,10 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   botTestQq: () => ipcRenderer.invoke('dsh:bot-test-qq'),
   botTestWechat: () => ipcRenderer.invoke('dsh:bot-test-wechat'),
   onBotState: (cb) => subscribe('dsh:bot-state', cb),
+  // 文生图（云端 OpenAI 兼容 images/generations）
+  imageGenConfig: () => ipcRenderer.invoke('dsh:image-gen-config'),
+  imageGenConfigSet: (payload) => ipcRenderer.invoke('dsh:image-gen-config-set', payload),
+  imageGenTest: () => ipcRenderer.invoke('dsh:image-gen-test'),
 
   // 截图 / 附件 / 新对话接续
   screenshot: () => ipcRenderer.invoke('dsh:screenshot'),

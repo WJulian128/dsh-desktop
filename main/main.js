@@ -23,6 +23,7 @@ const { startCompletionWatcher, findNewestSessionFile } = require('./notify');
 const { QqGateway } = require('./bot-gateway/qq-gateway');
 const { wechatPush, formatReplyMarkdown } = require('./bot-gateway/wechat-push');
 const { ReplyBridge, extractReplyAfter } = require('./bot-gateway/reply-bridge');
+const { generateImage } = require('./image-gen');
 const { inQuietHours } = require('./quiet-hours');
 const memoryStore = require('./memory-store');
 const { startAutoMemory } = require('./memory-watch');
@@ -1433,6 +1434,35 @@ function startRpc() {
       },
     };
   });
+  // 文生图（MCP 工具 dsh_desktop_generate_image：主模型写 prompt，云端生图模型执行）
+  rpc.on('imageGenerate', async (params) => {
+    const cfg = settings.get('imageGen') || {};
+    const result = await generateImage(cfg, {
+      prompt: params && params.prompt,
+      size: params && params.size,
+      n: params && params.n,
+    }, { log: logLine });
+    if (!result.ok) return result;
+    // b64 解码落盘到工作区附件目录（agent 可用 read_image / describe_image / open_folder 查看）
+    const attachDir = path.join(state.workspace || os.tmpdir(), '.dsh-attachments');
+    try { fs.mkdirSync(attachDir, { recursive: true }); } catch { /* 忽略 */ }
+    const files = [];
+    for (let i = 0; i < result.images.length; i++) {
+      const img = result.images[i];
+      const ts = Date.now();
+      const file = path.join(attachDir, 'gen-' + ts + (result.images.length > 1 ? '-' + (i + 1) : '') + '.png');
+      try {
+        if (img.b64) fs.writeFileSync(file, Buffer.from(img.b64, 'base64'));
+        else if (img.url) fs.writeFileSync(file.replace(/\.png$/, '.url.txt'), '图片 URL：' + img.url + '\n');
+        else continue;
+        files.push({ path: file, url: img.url || undefined, revisedPrompt: img.revisedPrompt || undefined });
+      } catch (err) {
+        logLine('[image-gen] 落盘失败：' + (err && err.message ? err.message : err));
+      }
+    }
+    if (!files.length) return { ok: false, error: '生成成功但图片保存失败' };
+    return { ok: true, files };
+  });
   // 模型可用：供 MCP 工具 dsh_desktop_list_providers 查询（主模型派发子代理时选择 provider/思考强度）
   rpc.on('providersList', async () => ({ ok: true, providers: providersListPayload() }));
   rpc.on('checkUpdates', async (params) => {
@@ -2268,6 +2298,51 @@ function registerDesktopFeatureIpc() {
       content: '\u2705 DSH \u684c\u9762\u7aef\u6d4b\u8bd5\u63a8\u9001\uff08\u914d\u7f6e\u6b63\u5e38\uff09',
       log: logLine,
     });
+  });
+
+  /* ---- 文生图（云端 OpenAI 兼容 images/generations） ---- */
+  ipcMain.handle('dsh:image-gen-config', async () => {
+    const cfg = settings.get('imageGen') || {};
+    return {
+      enabled: cfg.enabled !== false,
+      baseUrl: String(cfg.baseUrl || ''),
+      apiKey: String(cfg.apiKey || ''),
+      model: String(cfg.model || ''),
+      size: String(cfg.size || '1024x1024'),
+    };
+  });
+  ipcMain.handle('dsh:image-gen-config-set', async (_event, payload) => {
+    const p = payload || {};
+    const cur = settings.get('imageGen') || {};
+    let apiKey = p.apiKey !== undefined ? String(p.apiKey).trim() : String(cur.apiKey || '');
+    if (apiKey === '__keep__') apiKey = String(cur.apiKey || ''); // 页面未改动时保留已存 key
+    const next = {
+      enabled: p.enabled !== undefined ? p.enabled !== false : (cur.enabled !== false),
+      baseUrl: p.baseUrl !== undefined ? String(p.baseUrl).trim() : String(cur.baseUrl || ''),
+      apiKey,
+      model: p.model !== undefined ? String(p.model).trim() : String(cur.model || ''),
+      size: p.size !== undefined ? String(p.size).trim() : String(cur.size || '1024x1024'),
+    };
+    settings.set('imageGen', next);
+    return { ok: true };
+  });
+  // 测试生成一张（简易 prompt，快速验证配置）
+  ipcMain.handle('dsh:image-gen-test', async () => {
+    const cfg = settings.get('imageGen') || {};
+    const result = await generateImage(cfg, { prompt: '\u4e00\u53ea\u53ef\u7231\u7684\u6a58\u732b\u5728\u8349\u5730\u4e0a\uff0c\u7b80\u7ea6\u63d2\u753b\u98ce\u683c\uff0c\u6d4b\u8bd5\u56fe\u7247', n: 1 }, { log: logLine });
+    if (!result.ok) return result;
+    const attachDir = path.join(state.workspace || os.tmpdir(), '.dsh-attachments');
+    try { fs.mkdirSync(attachDir, { recursive: true }); } catch { /* 忽略 */ }
+    const img = result.images[0];
+    const file = path.join(attachDir, 'gen-test-' + Date.now() + '.png');
+    try {
+      if (img.b64) fs.writeFileSync(file, Buffer.from(img.b64, 'base64'));
+      else if (img.url) fs.writeFileSync(file.replace(/\.png$/, '.url.txt'), '图片 URL：' + img.url + '\n');
+      else return { ok: false, error: '服务商未返回图片数据' };
+    } catch (err) {
+      return { ok: false, error: '保存失败：' + ((err && err.message) || err) };
+    }
+    return { ok: true, path: file, url: img.url || undefined };
   });
 
   ipcMain.handle('dsh:git-summary', async () => {
