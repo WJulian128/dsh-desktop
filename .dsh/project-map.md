@@ -53,7 +53,7 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - ⚠️ **截图闪回**：2.5s 安全阀/延迟 show 回调必须校验 captureFlowToken（closeCaptureWindow 作废流程），否则快速截完图后窗口被重新弹出露出上一次冻结画面
 - ⚠️ **UTF-8 截断**：按字节截断多字节文本时，结尾落在字符**首字节**（0xC0-0xF7）不会触发"去后续字节"循环 → 产生 U+FFFD。逐字符按字节预算拼接最稳（wechat-push.truncateUtf8Bytes 已踩坑修复）
 - QQ 机器人：C2C 被动回复窗口 5 分钟（先占位回复保主动额度，每月仅 4 条/用户）；群 AT 被动窗口仅 5 秒（群回复必然走主动消息）；token 过期 7200s 需缓存刷新；Node ≥22 内置 WebSocket（无需 ws 依赖）
-- ⚠️ **0.1.2-rc.1 web token 认证**：dsh web 子进程打印的完整 URL 带 ?token=（每进程一次性随机）；页面加载与 /api RPC 必须走它（GET 换取 dsh-auth-* cookie，token 生命周期内可反复换取）。桌面端捕获到 token 但服务已换进程时 401——先重启桌面端
+- ⚠️ **0.1.2-rc.1 web token 认证**：dsh web 子进程打印的完整 URL 带 ?token=，页面与 /api 都要先 GET 它换取 dsh-auth-* cookie（HMAC 签名、有效期 30 天、按 Host 绑定、与 launch token 解耦）。实测 launch token 会**静默轮换且不重打印 URL**（进程未重启也会发生），但 cookie 一旦铸好就独立生效——桌面端只在启动早期换一次 cookie（launchHarness + 冒烟），之后 401 强制重换换不到时（token 已轮换）重启桌面端即可恢复
 - ⚠️ **npm file: 依赖形态漂移**：node_modules/@dsh-desktop/settings-update 可能是 junction 也可能是普通拷贝（npm 行为随版本/install-links 变）；一律以 boot-preflight 为准维护 profiles 链接，别假设形态
 - ⚠️ **沙箱 EPERM 假失败**：在受限沙箱里跑 scripts/test-*.js，凡 spawn 外部进程（zstd/win-control/MCP stdio）的用例报 EPERM——不是代码回归，提权复验
 - ⚠️ **loader entry 失败=致命**：0.1.2-rc.1 起插件树里任何 loader entry 导入失败都会让整个 harness 退出（旧版容忍）；升级后“启动不了”优先查 dsh-web.log 里的 plugin tree/loader entry/ERR_MODULE_NOT_FOUND
