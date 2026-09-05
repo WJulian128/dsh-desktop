@@ -75,6 +75,9 @@ const rpc = createServer((req, res) => {
     if (payload.method === 'gitPull') return send(200, { ok: true, result: { ok: true, output: 'Already up to date.' } });
     if (payload.method === 'gitMerge') return send(200, { ok: true, result: { ok: true, output: 'Fast-forward' } });
     if (payload.method === 'gitRemoteList') return send(200, { ok: true, result: { ok: true, output: 'origin\thttps://github.com/o/r.git (fetch)' } });
+    if (payload.method === 'sessionMessageSend') return send(200, { ok: true, result: { ok: true, message: { id: 'm1', from: 'session-a', fromTitle: '会话甲', text: 'hello' } } });
+    if (payload.method === 'sessionInboxStatus') return send(200, { ok: true, result: { ok: true, items: [{ id: 'm1', from: 'session-a', fromTitle: '会话甲', text: 'hello', time: 1700000000000, read: false }], unread: 1 } });
+    if (payload.method === 'sessionInboxMarkRead') return send(200, { ok: true, result: { ok: true, marked: 1 } });
     if (payload.method === 'uiSnapshot') return send(200, { ok: true, result: { ok: true, url: 'http://x', title: 't', vw: 1280, vh: 800, dpr: 1, elements: [{ tag: 'button', text: '保存', id: '', cls: '', x: 10, y: 20, w: 80, h: 30 }] } });
     if (payload.method === 'uiClick') return send(200, { ok: true, result: { ok: true, tag: 'button', text: '保存' } });
     if (payload.method === 'uiText') return send(200, { ok: true, result: { ok: true, text: '面板文本' } });
@@ -155,6 +158,9 @@ try {
   check('has dsh_desktop_ui_click', names.includes('dsh_desktop_ui_click'), '');
   check('has dsh_desktop_ui_text', names.includes('dsh_desktop_ui_text'), '');
   check('has dsh_desktop_ui_capture', names.includes('dsh_desktop_ui_capture'), '');
+  check('has dsh_desktop_send_session_message', names.includes('dsh_desktop_send_session_message'), '');
+  check('has dsh_desktop_session_inbox_status', names.includes('dsh_desktop_session_inbox_status'), '');
+  check('has dsh_desktop_session_inbox_mark_read', names.includes('dsh_desktop_session_inbox_mark_read'), '');
 
   const doctor = await client.callTool({ name: 'dsh_desktop_system_doctor', arguments: {} });
   const doctorText = (doctor.content || []).map((c) => c.text || '').join('\n');
@@ -283,6 +289,18 @@ try {
   const ghPush = await client.callTool({ name: 'dsh_desktop_git_push', arguments: {} });
   const ghPushText = (ghPush.content || []).map((c) => c.text || '').join('\n');
   check('git_push formats output', ghPushText.includes('pushed main'), ghPushText.slice(0, 100));
+
+  const xmsg = await client.callTool({ name: 'dsh_desktop_send_session_message', arguments: { toSessionId: 'session-b', text: '你好' } });
+  const xmsgText = (xmsg.content || []).map((c) => c.text || '').join('\n');
+  check('send_session_message formats delivery note', xmsgText.includes('已投递') && xmsgText.includes('会话甲'), xmsgText.slice(0, 150));
+
+  const xinb = await client.callTool({ name: 'dsh_desktop_session_inbox_status', arguments: { sessionId: 'session-b' } });
+  const xinbText = (xinb.content || []).map((c) => c.text || '').join('\n');
+  check('session_inbox_status formats unread list', xinbText.includes('未读 1 条') && xinbText.includes('会话甲'), xinbText.slice(0, 150));
+
+  const xread = await client.callTool({ name: 'dsh_desktop_session_inbox_mark_read', arguments: { sessionId: 'session-b' } });
+  const xreadText = (xread.content || []).map((c) => c.text || '').join('\n');
+  check('session_inbox_mark_read reports count', xreadText.includes('1 条'), xreadText.slice(0, 100));
 
   await client.close();
 } catch (err) {
