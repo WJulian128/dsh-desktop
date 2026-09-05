@@ -10,7 +10,8 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - `renderer/`：加载页/终端/Git 窗（git-diff.html）/截图选区（capture.html 冻结画面+选区）
 - `packages/settings-update/`：设置页（10 分区，含「GitHub 与 Git」「机器人」）+ 右侧常驻面板客户端插件（client.js；导出 _parseGitSummary 供单测；截图按钮 + 拒收补救 + 插话按钮）
 - `packages/subagent-approval/`、`packages/llm-openai-compat/`：子代理审批桥 / 通用 OpenAI 兼容厂商 adapter
-- `scripts/`：测试（test-*.js/mjs，30 项）+ 打包冒烟 + install-skills.mjs + rewrite-history.js
+- `scripts/`：测试（test-*.js/mjs，33 项）+ **check-harness-contract.js（官方契约体检，升级前后必跑）** + 打包冒烟 + install-skills.mjs + rewrite-history.js
+- `UPGRADE-PLAYBOOK.md`：harness 升级处置手册（升级前后 checklist / 故障树 / 官方契约清单）——每次 dsh 升级参照执行
 
 ## 入口
 - Electron 入口：main/main.js（package.json "main"）
