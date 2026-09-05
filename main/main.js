@@ -2113,8 +2113,13 @@ function startRpc() {
     // 注入发送——消息立刻进入当前会话队列/回合，重启后恢复时天然排在其后到达的任何用户
     // 消息之前。注入失败则依赖落盘标记，重启后页面就绪时兜底注入。
     const task = params && params.task ? String(params.task).slice(0, 4000) : '';
-    const msg = '\u7ee7\u7eed\u5b8c\u6210\u672a\u5b8c\u6210\u7684\u4efb\u52a1\uff08\u684c\u9762\u7aef\u5df2\u91cd\u542f\uff09\uff1a' + task;
-    if (task) {
+    const subSuffix = runningSubagentsSuffix();
+    // 未带显式 task 但后台有运行中子代理时：默认接续任务 = 恢复被打断的子代理
+    const effectiveTask = task || (subSuffix
+      ? '\u6062\u590d\u88ab\u91cd\u542f\u6253\u65ad\u7684\u540e\u53f0\u5b50\u4ee3\u7406\u3002'
+      : '');
+    const msg = '\u7ee7\u7eed\u5b8c\u6210\u672a\u5b8c\u6210\u7684\u4efb\u52a1\uff08\u684c\u9762\u7aef\u5df2\u91cd\u542f\uff09\uff1a' + effectiveTask + subSuffix;
+    if (effectiveTask) {
       // 只写标记：重启后页面就绪时统一自动注入发送（用户可看到发送动作，且可用插话排到队列最前）。
       // 不在重启前注入——重启前提交的消息会"消失"在队列里，重启后无任何可见动作，用户以为没接续。
       try {
@@ -4109,18 +4114,60 @@ function injectText(text) {
 }
 
 /** 写入自动接续文件（重启/停服打断进行中回合时用；已有文件不覆盖，幂等）。 */
+/**
+ * 活跃子代理提示后缀（重启/退出会被打断后台子代理——教训：2026-09-05 验证重启
+ * 打断了 Claude 调研子代理）。同步轻扫 projcache：120s 内有活动、且会话首帧
+ * origin='subagent' 的会话视为运行中子代理；返回给主代理的恢复提示文本（空串=无）。
+ */
+function runningSubagentsSuffix() {
+  try {
+    const dir = path.join(state.dshHome, 'storages', 'session_projcache', 'sessions');
+    if (!fs.existsSync(dir)) return '';
+    const now = Date.now();
+    const entries = [];
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!e.name.endsWith('.json')) continue;
+      const file = path.join(dir, e.name);
+      try {
+        const m = fs.statSync(file).mtimeMs;
+        if (now - m < 120000) entries.push({ sessionId: e.name.slice(0, -5), file, mtimeMs: m });
+      } catch { /* 忽略 */ }
+    }
+    entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const running = [];
+    for (const en of entries.slice(0, 6)) {
+      let cwd = null;
+      let title = null;
+      try {
+        const doc = JSON.parse(fs.readFileSync(en.file, 'utf8'));
+        cwd = doc && doc.record && doc.record.identity && doc.record.identity.cwd ? String(doc.record.identity.cwd) : null;
+        const t = doc && doc.record && doc.record.rows && doc.record.rows.title;
+        title = t && t.val && typeof t.val === 'string' ? String(t.val).slice(0, 50) : null;
+      } catch { continue; }
+      if (!cwd) continue;
+      if (!isSubagentSessionFileByCwd(cwd, en.sessionId)) continue;
+      running.push(title || en.sessionId.slice(0, 12));
+      if (running.length >= 3) break;
+    }
+    if (!running.length) return '';
+    return '\n\n\u26a0 \u91cd\u542f\u524d\u6709 ' + running.length + ' \u4e2a\u540e\u53f0\u5b50\u4ee3\u7406\u88ab\u6253\u65ad\uff1a' +
+      running.join('\u3001') + '\u3002\u8bf7\u6062\u590d\u540e\u7528 list_agents \u67e5\u770b\u72b6\u6001\uff0c\u5e76\u9010\u4e2a send_message \u8ba9\u5b83\u4eec\u7ee7\u7eed\u5404\u81ea\u4efb\u52a1\u3002';
+  } catch { return ''; }
+}
+
 function writeAutoResumeIfNeeded(reason) {
   try {
     const file = path.join(app.getPath('userData'), 'auto-resume.json');
     if (fs.existsSync(file)) return false;
-    if (!(sessionIsBusy() || sessionRecentlyActive(10 * 60 * 1000))) return false;
+    const subSuffix = runningSubagentsSuffix();
+    if (!(sessionIsBusy() || sessionRecentlyActive(10 * 60 * 1000) || subSuffix)) return false;
     fs.writeFileSync(file, JSON.stringify({
       msg: '\u7ee7\u7eed\u5b8c\u6210\u4e0a\u4e00\u4e2a\u88ab\u4e2d\u65ad\u7684\u4efb\u52a1\uff1a' +
         (reason === 'rpc-auth' ? 'RPC \u8ba4\u8bc1\u5931\u6548\u81ea\u52a8\u91cd\u542f\u4e86\u670d\u52a1' : '\u684c\u9762\u7aef\u91cd\u542f') +
-        '\u6253\u65ad\u4e86\u6b63\u5728\u8fdb\u884c\u7684\u5de5\u4f5c\uff08\u53ef\u80fd\u5305\u62ec\u60a8\u6b63\u5728\u8f93\u5165\u7684\u5185\u5bb9\uff09\uff0c\u8bf7\u68c0\u67e5\u4e0a\u4e0b\u6587\u540e\u7ee7\u7eed\u5b8c\u6210\u3002',
+        '\u6253\u65ad\u4e86\u6b63\u5728\u8fdb\u884c\u7684\u5de5\u4f5c\uff08\u53ef\u80fd\u5305\u62ec\u60a8\u6b63\u5728\u8f93\u5165\u7684\u5185\u5bb9\uff09\uff0c\u8bf7\u68c0\u67e5\u4e0a\u4e0b\u6587\u540e\u7ee7\u7eed\u5b8c\u6210\u3002' + subSuffix,
       at: Date.now(),
     }), 'utf8');
-    logLine('[auto-resume] ' + reason + ' \u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u5de5\u4f5c\uff0c\u5df2\u5199\u63a5\u7eed\u6d88\u606f');
+    logLine('[auto-resume] ' + reason + ' \u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u5de5\u4f5c' + (subSuffix ? '\uff08\u542b\u8fd0\u884c\u4e2d\u5b50\u4ee3\u7406\uff09' : '') + '\uff0c\u5df2\u5199\u63a5\u7eed\u6d88\u606f');
     return true;
   } catch (err) { /* 忽略 */ return false; }
 }
