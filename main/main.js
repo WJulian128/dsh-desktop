@@ -2863,6 +2863,16 @@ function startRpc() {
 function registerIpc() {
   ipcMain.handle('dsh:state', () => state);
   ipcMain.handle('dsh:retry', () => { startHarness(); return { ok: true }; });
+  // 仅重启 harness 服务（菜单「重新启动服务」同路径）：比 relaunch 快，客户端插件/web.patch 改动生效；
+  // startHarness 幂等（先停旧服务再启动），进行中的回合会被打断（同其它服务重启场景）。
+  ipcMain.handle('dsh:restart-service', async () => {
+    try {
+      await startHarness();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    }
+  });
   ipcMain.handle('dsh:choose-workspace', () => { chooseWorkspace(); return { ok: true }; });
   ipcMain.handle('dsh:open-logs', () => { fs.mkdirSync(logDir, { recursive: true }); shell.openPath(logDir); return { ok: true }; });
   ipcMain.handle('dsh:update-check', () => { checkUpdates({ manual: true }); return { ok: true }; });

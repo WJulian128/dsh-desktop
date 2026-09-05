@@ -426,7 +426,10 @@ window.__ModuleLoader__.load({
             h("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end", flexWrap: "wrap" } },
               btn("打开工作区", () => api().chooseWorkspace(), { small: true }),
               btn("打开日志", () => api().openLogs(), { small: true }),
-              btn("重启应用", () => api().restartApp(), { small: true, danger: true })))),
+              btn("刷新界面", () => { try { window.location.reload(); } catch (err) {} }, { small: true, title: "秒级：重新加载页面与客户端插件（client.js 等改动即时生效；不重启服务，进行中的任务不受影响）" }),
+              btn("重启服务", () => api().restartService(), { small: true, title: "较快：仅重启 harness 服务并重载页面（约 10-20s；不退出桌面端；客户端插件与 web.patch 改动生效）" }),
+              btn("重启应用", () => api().restartApp(), { small: true, danger: true, title: "最慢（兜底）：完整重启桌面端（main 进程代码改动必须用它）；网络/认证异常等疑难场景也用这个" })))),
+        h("p", { style: { ...st.hint, padding: "0 2px" } }, "改代码后的生效选择：client.js/页面改动 →「刷新界面」；web.patch/MCP/服务端配置 →「重启服务」；main 进程改动 →「重启应用」（慢，兜底）。"),
 
         error ? h("div", { style: st.msgErr }, "桌面端桥接错误：" + error) : null);
     }
@@ -2148,25 +2151,27 @@ window.__ModuleLoader__.load({
       subagent: '子代理', subagent_fork: '子代理', job_output: '后台任务', job_kill: '停止任务',
       create_goal: '创建目标', get_goal: '读取目标', update_goal: '更新目标',
     };
+    // 键 = 工具公共名去掉 "mcp__" 前缀（如 mcp__dsh_desktop__get_state → dsh_desktop__get_state）。
+    // 注意是双下划线：serverName(dsh_desktop) 与 rawName 之间由 harness 用 __ 拼接（2026-09-05 工具名去重后形态）。
     const MCP_TOOL_LABELS = {
-      dsh_desktop_computer_screenshot: '屏幕截图', dsh_desktop_describe_image: '本地图片识别',
-      dsh_desktop_get_state: '桌面状态', dsh_desktop_restart_app: '重启桌面', dsh_desktop_api_balance: 'API 余额',
-      dsh_desktop_api_usage: '用量统计', dsh_desktop_schedule: '定时任务', dsh_desktop_computer_mouse: '鼠标操控',
-      dsh_desktop_computer_keyboard: '键盘输入', dsh_desktop_computer_window: '窗口操作', dsh_desktop_computer_clipboard: '剪贴板',
-      dsh_desktop_computer_launch: '启动应用', dsh_desktop_open_folder: '打开目录', dsh_desktop_open_logs: '打开日志',
-      dsh_desktop_open_terminal: '终端模式', dsh_desktop_apply_update: '应用更新', dsh_desktop_check_updates: '检查更新',
-      dsh_desktop_system_doctor: '系统体检', dsh_desktop_switch_workspace: '切换工作区',
-      dsh_desktop_send_session_message: '跨会话消息', dsh_desktop_session_inbox_status: '收件箱查询',
-      dsh_desktop_session_inbox_mark_read: '收件箱已读',
+      dsh_desktop__computer_screenshot: '屏幕截图', dsh_desktop__describe_image: '本地图片识别',
+      dsh_desktop__get_state: '桌面状态', dsh_desktop__restart_app: '重启桌面', dsh_desktop__api_balance: 'API 余额',
+      dsh_desktop__api_usage: '用量统计', dsh_desktop__schedule: '定时任务', dsh_desktop__computer_mouse: '鼠标操控',
+      dsh_desktop__computer_keyboard: '键盘输入', dsh_desktop__computer_window: '窗口操作', dsh_desktop__computer_clipboard: '剪贴板',
+      dsh_desktop__computer_launch: '启动应用', dsh_desktop__open_folder: '打开目录', dsh_desktop__open_logs: '打开日志',
+      dsh_desktop__open_terminal: '终端模式', dsh_desktop__apply_update: '应用更新', dsh_desktop__check_updates: '检查更新',
+      dsh_desktop__system_doctor: '系统体检', dsh_desktop__switch_workspace: '切换工作区',
+      dsh_desktop__send_session_message: '跨会话消息', dsh_desktop__session_inbox_status: '收件箱查询',
+      dsh_desktop__session_inbox_mark_read: '收件箱已读',
     };
     const toolLabel = (name) => {
       if (TOOL_LABELS[name]) return TOOL_LABELS[name];
-      if (name && name.indexOf('mcp__') === 0) {
-        const raw = name.slice(5);
-        return MCP_TOOL_LABELS[raw] || raw.split('__').pop().replace(/_/g, ' ');
-      }
       if (name && name.indexOf('mcp__memory') === 0) return '记忆图谱';
       if (name && name.indexOf('mcp__sequential') === 0) return '分步推理';
+      if (name && name.indexOf('mcp__dsh_desktop') === 0) {
+        const raw = name.slice(5); // 'dsh_desktop__xxx'
+        return MCP_TOOL_LABELS[raw] || raw.split('__').pop().replace(/_/g, ' ');
+      }
       return name || '工具';
     };
     const fmtAgo = (t) => {

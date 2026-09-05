@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   applyUpdate: () => ipcRenderer.invoke('dsh:update-apply'),
   showMain: () => ipcRenderer.invoke('dsh:show-main'),
   restartApp: () => ipcRenderer.invoke('dsh:restart'),
+  // 仅重启 harness 服务（不退出桌面端）：客户端插件/web.patch/MCP 配置改动生效的较快路径
+  restartService: () => ipcRenderer.invoke('dsh:restart-service'),
   headlessRun: (task) => ipcRenderer.invoke('dsh:headless-run', { task }),
   headlessCancel: () => ipcRenderer.invoke('dsh:headless-cancel'),
   onHeadlessData: (cb) => subscribe('dsh:headless-data', cb),
