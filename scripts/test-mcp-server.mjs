@@ -114,97 +114,97 @@ try {
   const tools = await client.listTools();
   const names = (tools.tools || []).map((t) => t.name);
   check('tools discovered', names.length > 0, names.join(', '));
-  check('has dsh_desktop_get_state', names.includes('dsh_desktop_get_state'), '');
-  check('has dsh_desktop_check_updates', names.includes('dsh_desktop_check_updates'), '');
-  check('has dsh_desktop_apply_update', names.includes('dsh_desktop_apply_update'), '');
-  check('has dsh_desktop_open_folder', names.includes('dsh_desktop_open_folder'), '');
-  check('has dsh_desktop_switch_workspace', names.includes('dsh_desktop_switch_workspace'), '');
-  check('has dsh_desktop_describe_image', names.includes('dsh_desktop_describe_image'), '');
-  check('has dsh_desktop_api_balance', names.includes('dsh_desktop_api_balance'), '');
-  check('has dsh_desktop_api_usage', names.includes('dsh_desktop_api_usage'), '');
-  check('has dsh_desktop_computer_screenshot', names.includes('dsh_desktop_computer_screenshot'), '');
-  check('has dsh_desktop_computer_screen', names.includes('dsh_desktop_computer_screen'), '');
-  check('has dsh_desktop_computer_mouse', names.includes('dsh_desktop_computer_mouse'), '');
-  check('has dsh_desktop_computer_keyboard', names.includes('dsh_desktop_computer_keyboard'), '');
-  check('has dsh_desktop_computer_window', names.includes('dsh_desktop_computer_window'), '');
-  check('has dsh_desktop_computer_clipboard', names.includes('dsh_desktop_computer_clipboard'), '');
-  check('has dsh_desktop_computer_launch', names.includes('dsh_desktop_computer_launch'), '');
-  check('has dsh_desktop_schedule', names.includes('dsh_desktop_schedule'), '');
-  check('has dsh_desktop_system_doctor', names.includes('dsh_desktop_system_doctor'), '');
-  check('has dsh_desktop_system_fix', names.includes('dsh_desktop_system_fix'), '');
-  check('has dsh_desktop_system_env', names.includes('dsh_desktop_system_env'), '');
-  check('has dsh_desktop_project_map_get', names.includes('dsh_desktop_project_map_get'), '');
-  check('has dsh_desktop_project_map_status', names.includes('dsh_desktop_project_map_status'), '');
-  check('has dsh_desktop_project_map_set', names.includes('dsh_desktop_project_map_set'), '');
-  check('has dsh_desktop_edit_claim', names.includes('dsh_desktop_edit_claim'), '');
-  check('has dsh_desktop_edit_release', names.includes('dsh_desktop_edit_release'), '');
-  check('has dsh_desktop_edit_status', names.includes('dsh_desktop_edit_status'), '');
-  check('has dsh_desktop_edit_journal', names.includes('dsh_desktop_edit_journal'), '');
-  check('has dsh_desktop_git_status', names.includes('dsh_desktop_git_status'), '');
-  check('has dsh_desktop_git_commit', names.includes('dsh_desktop_git_commit'), '');
-  check('has dsh_desktop_git_checkout', names.includes('dsh_desktop_git_checkout'), '');
-  check('has dsh_desktop_git_restore', names.includes('dsh_desktop_git_restore'), '');
-  check('has dsh_desktop_git_init', names.includes('dsh_desktop_git_init'), '');
-  check('has dsh_desktop_github_status', names.includes('dsh_desktop_github_status'), '');
-  check('has dsh_desktop_github_login', names.includes('dsh_desktop_github_login'), '');
-  check('has dsh_desktop_github_login_wait', names.includes('dsh_desktop_github_login_wait'), '');
-  check('has dsh_desktop_github_remote_setup', names.includes('dsh_desktop_github_remote_setup'), '');
-  check('has dsh_desktop_github_search_code', names.includes('dsh_desktop_github_search_code'), '');
-  check('has dsh_desktop_git_push', names.includes('dsh_desktop_git_push'), '');
-  check('has dsh_desktop_git_pull', names.includes('dsh_desktop_git_pull'), '');
-  check('has dsh_desktop_git_merge', names.includes('dsh_desktop_git_merge'), '');
-  check('has dsh_desktop_github_set_visibility', names.includes('dsh_desktop_github_set_visibility'), '');
-  check('has dsh_desktop_ui_snapshot', names.includes('dsh_desktop_ui_snapshot'), '');
-  check('has dsh_desktop_ui_click', names.includes('dsh_desktop_ui_click'), '');
-  check('has dsh_desktop_ui_text', names.includes('dsh_desktop_ui_text'), '');
-  check('has dsh_desktop_ui_capture', names.includes('dsh_desktop_ui_capture'), '');
-  check('has dsh_desktop_send_session_message', names.includes('dsh_desktop_send_session_message'), '');
-  check('has dsh_desktop_session_inbox_status', names.includes('dsh_desktop_session_inbox_status'), '');
-  check('has dsh_desktop_session_inbox_mark_read', names.includes('dsh_desktop_session_inbox_mark_read'), '');
+  check('has dsh_desktop_get_state', names.includes('get_state'), '');
+  check('has dsh_desktop_check_updates', names.includes('check_updates'), '');
+  check('has dsh_desktop_apply_update', names.includes('apply_update'), '');
+  check('has dsh_desktop_open_folder', names.includes('open_folder'), '');
+  check('has dsh_desktop_switch_workspace', names.includes('switch_workspace'), '');
+  check('has dsh_desktop_describe_image', names.includes('describe_image'), '');
+  check('has dsh_desktop_api_balance', names.includes('api_balance'), '');
+  check('has dsh_desktop_api_usage', names.includes('api_usage'), '');
+  check('has dsh_desktop_computer_screenshot', names.includes('computer_screenshot'), '');
+  check('has dsh_desktop_computer_screen', names.includes('computer_screen'), '');
+  check('has dsh_desktop_computer_mouse', names.includes('computer_mouse'), '');
+  check('has dsh_desktop_computer_keyboard', names.includes('computer_keyboard'), '');
+  check('has dsh_desktop_computer_window', names.includes('computer_window'), '');
+  check('has dsh_desktop_computer_clipboard', names.includes('computer_clipboard'), '');
+  check('has dsh_desktop_computer_launch', names.includes('computer_launch'), '');
+  check('has dsh_desktop_schedule', names.includes('schedule'), '');
+  check('has dsh_desktop_system_doctor', names.includes('system_doctor'), '');
+  check('has dsh_desktop_system_fix', names.includes('system_fix'), '');
+  check('has dsh_desktop_system_env', names.includes('system_env'), '');
+  check('has dsh_desktop_project_map_get', names.includes('project_map_get'), '');
+  check('has dsh_desktop_project_map_status', names.includes('project_map_status'), '');
+  check('has dsh_desktop_project_map_set', names.includes('project_map_set'), '');
+  check('has dsh_desktop_edit_claim', names.includes('edit_claim'), '');
+  check('has dsh_desktop_edit_release', names.includes('edit_release'), '');
+  check('has dsh_desktop_edit_status', names.includes('edit_status'), '');
+  check('has dsh_desktop_edit_journal', names.includes('edit_journal'), '');
+  check('has dsh_desktop_git_status', names.includes('git_status'), '');
+  check('has dsh_desktop_git_commit', names.includes('git_commit'), '');
+  check('has dsh_desktop_git_checkout', names.includes('git_checkout'), '');
+  check('has dsh_desktop_git_restore', names.includes('git_restore'), '');
+  check('has dsh_desktop_git_init', names.includes('git_init'), '');
+  check('has dsh_desktop_github_status', names.includes('github_status'), '');
+  check('has dsh_desktop_github_login', names.includes('github_login'), '');
+  check('has dsh_desktop_github_login_wait', names.includes('github_login_wait'), '');
+  check('has dsh_desktop_github_remote_setup', names.includes('github_remote_setup'), '');
+  check('has dsh_desktop_github_search_code', names.includes('github_search_code'), '');
+  check('has dsh_desktop_git_push', names.includes('git_push'), '');
+  check('has dsh_desktop_git_pull', names.includes('git_pull'), '');
+  check('has dsh_desktop_git_merge', names.includes('git_merge'), '');
+  check('has dsh_desktop_github_set_visibility', names.includes('github_set_visibility'), '');
+  check('has dsh_desktop_ui_snapshot', names.includes('ui_snapshot'), '');
+  check('has dsh_desktop_ui_click', names.includes('ui_click'), '');
+  check('has dsh_desktop_ui_text', names.includes('ui_text'), '');
+  check('has dsh_desktop_ui_capture', names.includes('ui_capture'), '');
+  check('has dsh_desktop_send_session_message', names.includes('send_session_message'), '');
+  check('has dsh_desktop_session_inbox_status', names.includes('session_inbox_status'), '');
+  check('has dsh_desktop_session_inbox_mark_read', names.includes('session_inbox_mark_read'), '');
 
-  const doctor = await client.callTool({ name: 'dsh_desktop_system_doctor', arguments: {} });
+  const doctor = await client.callTool({ name: 'system_doctor', arguments: {} });
   const doctorText = (doctor.content || []).map((c) => c.text || '').join('\n');
   check('system_doctor formats', doctorText.includes('长路径支持') && doctorText.includes('1/2'), doctorText.slice(0, 150));
 
-  const fix = await client.callTool({ name: 'dsh_desktop_system_fix', arguments: { fix: { type: 'simple', id: 'utf8' } } });
+  const fix = await client.callTool({ name: 'system_fix', arguments: { fix: { type: 'simple', id: 'utf8' } } });
   const fixText = (fix.content || []).map((c) => c.text || '').join('\n');
   check('system_fix works', fixText.includes('修复完成'), fixText);
 
-  const env = await client.callTool({ name: 'dsh_desktop_system_env', arguments: { action: 'list' } });
+  const env = await client.callTool({ name: 'system_env', arguments: { action: 'list' } });
   const envText = (env.content || []).map((c) => c.text || '').join('\n');
   check('system_env list formats', envText.includes('PATH') && envText.includes('共 2 项'), envText.slice(0, 150));
 
-  const schedList = await client.callTool({ name: 'dsh_desktop_schedule', arguments: { action: 'list' } });
+  const schedList = await client.callTool({ name: 'schedule', arguments: { action: 'list' } });
   const schedText = (schedList.content || []).map((c) => c.text || '').join('\n');
   check('schedule list formats', schedText.includes('早会提醒') && schedText.includes('每天 09:00'), schedText.slice(0, 150));
 
-  const schedAdd = await client.callTool({ name: 'dsh_desktop_schedule', arguments: { action: 'add', task: { label: '测试', kind: 'reminder', mode: 'once', at: '10:30', task: '喝水' } } });
+  const schedAdd = await client.callTool({ name: 'schedule', arguments: { action: 'add', task: { label: '测试', kind: 'reminder', mode: 'once', at: '10:30', task: '喝水' } } });
   const schedAddText = (schedAdd.content || []).map((c) => c.text || '').join('\n');
   check('schedule add', schedAddText.includes('测试'), schedAddText);
 
-  const shot = await client.callTool({ name: 'dsh_desktop_computer_screenshot', arguments: {} });
+  const shot = await client.callTool({ name: 'computer_screenshot', arguments: {} });
   const shotText = (shot.content || []).map((c) => c.text || '').join('\n');
   check('computer_screenshot returns path + description', shotText.includes('screen-1.png') && shotText.includes('终端窗口'), shotText.slice(0, 120));
   check('computer_screenshot reports vision elapsed', shotText.includes('耗时 2s'), shotText.slice(0, 160));
 
-  const screen = await client.callTool({ name: 'dsh_desktop_computer_screen', arguments: {} });
+  const screen = await client.callTool({ name: 'computer_screen', arguments: {} });
   const screenText = (screen.content || []).map((c) => c.text || '').join('\n');
   check('computer_screen formats resolution', screenText.includes('1920×1080'), screenText);
 
-  const winList = await client.callTool({ name: 'dsh_desktop_computer_window', arguments: { action: 'list' } });
+  const winList = await client.callTool({ name: 'computer_window', arguments: { action: 'list' } });
   const winText = (winList.content || []).map((c) => c.text || '').join('\n');
   check('computer_window list formats', winText.includes('记事本') && winText.includes('[123]'), winText.slice(0, 120));
 
-  const clip = await client.callTool({ name: 'dsh_desktop_computer_clipboard', arguments: { action: 'get' } });
+  const clip = await client.callTool({ name: 'computer_clipboard', arguments: { action: 'get' } });
   const clipText = (clip.content || []).map((c) => c.text || '').join('\n');
   check('computer_clipboard get', clipText.includes('剪贴板内容'), clipText);
 
-  const image = await client.callTool({ name: 'dsh_desktop_describe_image', arguments: { ref: 'sha256:' + 'a'.repeat(64) } });
+  const image = await client.callTool({ name: 'describe_image', arguments: { ref: 'sha256:' + 'a'.repeat(64) } });
   const imageText = (image.content || []).map((c) => c.text || '').join('\n');
   check('describe_image returns description', imageText.includes('截图'), imageText.slice(0, 80));
   check('describe_image reports vision elapsed', imageText.includes('耗时 2s'), imageText.slice(0, 140));
 
-  const imageQ = await client.callTool({ name: 'dsh_desktop_describe_image', arguments: { path: 'C:\\x.png', question: '报错内容是什么？', region: { x: 0, y: 0, width: 100, height: 50 } } });
+  const imageQ = await client.callTool({ name: 'describe_image', arguments: { path: 'C:\\x.png', question: '报错内容是什么？', region: { x: 0, y: 0, width: 100, height: 50 } } });
   const imageQText = (imageQ.content || []).map((c) => c.text || '').join('\n');
   check('describe_image accepts question + region', imageQText.includes('截图'), imageQText.slice(0, 80));
 
@@ -224,81 +224,81 @@ try {
   describeImageDelay = 2500;
   {
     const c = await slowClient({ DSH_VISION_RPC_TIMEOUT_MS: '1000' });
-    const r = await c.callTool({ name: 'dsh_desktop_describe_image', arguments: { path: 'C:\\x.png' } });
+    const r = await c.callTool({ name: 'describe_image', arguments: { path: 'C:\\x.png' } });
     const t = (r.content || []).map((x) => x.text || '').join('\n');
     check('describe_image honors vision timeout (too short => timeout error)', t.includes('超时'), t.slice(0, 100));
     await c.close();
   }
   {
     const c = await slowClient({ DSH_VISION_RPC_TIMEOUT_MS: '6000' });
-    const r = await c.callTool({ name: 'dsh_desktop_describe_image', arguments: { path: 'C:\\x.png' } });
+    const r = await c.callTool({ name: 'describe_image', arguments: { path: 'C:\\x.png' } });
     const t = (r.content || []).map((x) => x.text || '').join('\n');
     check('describe_image succeeds when vision timeout is enough', t.includes('截图'), t.slice(0, 80));
     await c.close();
   }
   describeImageDelay = 0;
 
-  const balance = await client.callTool({ name: 'dsh_desktop_api_balance', arguments: {} });
+  const balance = await client.callTool({ name: 'api_balance', arguments: {} });
   const balanceText = (balance.content || []).map((c) => c.text || '').join('\n');
   check('api_balance formats balance', balanceText.includes('CNY') && balanceText.includes('12.34'), balanceText.slice(0, 120));
 
-  const usage = await client.callTool({ name: 'dsh_desktop_api_usage', arguments: {} });
+  const usage = await client.callTool({ name: 'api_usage', arguments: {} });
   const usageText = (usage.content || []).map((c) => c.text || '').join('\n');
   check('api_usage formats tokens', usageText.includes('1,000') && usageText.includes('$0.1234'), usageText.slice(0, 200));
 
-  const state = await client.callTool({ name: 'dsh_desktop_get_state', arguments: {} });
+  const state = await client.callTool({ name: 'get_state', arguments: {} });
   const text = (state.content || []).map((c) => c.text || '').join('\n');
   check('get_state returns rpc result', text.includes('0.1.0-rc.7'), text.slice(0, 120));
 
-  const checkRes = await client.callTool({ name: 'dsh_desktop_check_updates', arguments: { checkPrereleases: true } });
+  const checkRes = await client.callTool({ name: 'check_updates', arguments: { checkPrereleases: true } });
   const checkText = (checkRes.content || []).map((c) => c.text || '').join('\n');
   check('check_updates passes params through', checkText.includes('0.1.0-rc.7'), checkText.slice(0, 120));
 
-  const folder = await client.callTool({ name: 'dsh_desktop_open_folder', arguments: { path: 'C:\\test' } });
+  const folder = await client.callTool({ name: 'open_folder', arguments: { path: 'C:\\test' } });
   const folderText = (folder.content || []).map((c) => c.text || '').join('\n');
   check('open_folder echoes path', folderText.includes('C:\\test'), folderText.slice(0, 120));
 
-  const pmGet = await client.callTool({ name: 'dsh_desktop_project_map_get', arguments: {} });
+  const pmGet = await client.callTool({ name: 'project_map_get', arguments: {} });
   const pmGetText = (pmGet.content || []).map((c) => c.text || '').join('\n');
   check('project_map_get formats map + stale', pmGetText.includes('地图') && pmGetText.includes('src/a.js'), pmGetText.slice(0, 150));
 
-  const pmSet = await client.callTool({ name: 'dsh_desktop_project_map_set', arguments: { map: '# 新地图' } });
+  const pmSet = await client.callTool({ name: 'project_map_set', arguments: { map: '# 新地图' } });
   const pmSetText = (pmSet.content || []).map((c) => c.text || '').join('\n');
   check('project_map_set reports stats', pmSetText.includes('5') && pmSetText.includes('1'), pmSetText.slice(0, 120));
 
-  const claim = await client.callTool({ name: 'dsh_desktop_edit_claim', arguments: { files: ['src/a.js'] } });
+  const claim = await client.callTool({ name: 'edit_claim', arguments: { files: ['src/a.js'] } });
   const claimText = (claim.content || []).map((c) => c.text || '').join('\n');
   check('edit_claim reports conflicts', claimText.includes('冲突') && claimText.includes('src/b.js'), claimText.slice(0, 150));
 
-  const ecStatus = await client.callTool({ name: 'dsh_desktop_edit_status', arguments: {} });
+  const ecStatus = await client.callTool({ name: 'edit_status', arguments: {} });
   const ecText = (ecStatus.content || []).map((c) => c.text || '').join('\n');
   check('edit_status lists mine + others', ecText.includes('src/a.js') && ecText.includes('其他会话占用'), ecText.slice(0, 150));
 
-  const gitSt = await client.callTool({ name: 'dsh_desktop_git_status', arguments: {} });
+  const gitSt = await client.callTool({ name: 'git_status', arguments: {} });
   const gitStText = (gitSt.content || []).map((c) => c.text || '').join('\n');
   check('git_status formats porcelain', gitStText.includes('main'), gitStText.slice(0, 120));
 
-  const gitCm = await client.callTool({ name: 'dsh_desktop_git_commit', arguments: { message: '修复 bug' } });
+  const gitCm = await client.callTool({ name: 'git_commit', arguments: { message: '修复 bug' } });
   const gitCmText = (gitCm.content || []).map((c) => c.text || '').join('\n');
   check('git_commit passes message', gitCmText.includes('abc123'), gitCmText.slice(0, 120));
 
-  const ghStatus = await client.callTool({ name: 'dsh_desktop_github_status', arguments: {} });
+  const ghStatus = await client.callTool({ name: 'github_status', arguments: {} });
   const ghText = (ghStatus.content || []).map((c) => c.text || '').join('\n');
   check('github_status formats login + branch + remote', ghText.includes('octocat') && ghText.includes('main') && ghText.includes('github.com'), ghText.slice(0, 150));
 
-  const ghPush = await client.callTool({ name: 'dsh_desktop_git_push', arguments: {} });
+  const ghPush = await client.callTool({ name: 'git_push', arguments: {} });
   const ghPushText = (ghPush.content || []).map((c) => c.text || '').join('\n');
   check('git_push formats output', ghPushText.includes('pushed main'), ghPushText.slice(0, 100));
 
-  const xmsg = await client.callTool({ name: 'dsh_desktop_send_session_message', arguments: { toSessionId: 'session-b', text: '你好' } });
+  const xmsg = await client.callTool({ name: 'send_session_message', arguments: { toSessionId: 'session-b', text: '你好' } });
   const xmsgText = (xmsg.content || []).map((c) => c.text || '').join('\n');
   check('send_session_message formats delivery note', xmsgText.includes('已投递') && xmsgText.includes('会话甲'), xmsgText.slice(0, 150));
 
-  const xinb = await client.callTool({ name: 'dsh_desktop_session_inbox_status', arguments: { sessionId: 'session-b' } });
+  const xinb = await client.callTool({ name: 'session_inbox_status', arguments: { sessionId: 'session-b' } });
   const xinbText = (xinb.content || []).map((c) => c.text || '').join('\n');
   check('session_inbox_status formats unread list', xinbText.includes('未读 1 条') && xinbText.includes('会话甲'), xinbText.slice(0, 150));
 
-  const xread = await client.callTool({ name: 'dsh_desktop_session_inbox_mark_read', arguments: { sessionId: 'session-b' } });
+  const xread = await client.callTool({ name: 'session_inbox_mark_read', arguments: { sessionId: 'session-b' } });
   const xreadText = (xread.content || []).map((c) => c.text || '').join('\n');
   check('session_inbox_mark_read reports count', xreadText.includes('1 条'), xreadText.slice(0, 100));
 

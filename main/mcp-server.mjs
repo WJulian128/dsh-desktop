@@ -80,7 +80,7 @@ const server = new McpServer({
 });
 
 server.registerTool(
-  "dsh_desktop_get_state",
+  "get_state",
   {
     title: "获取桌面端状态",
     description:
@@ -92,7 +92,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_list_providers",
+  "list_providers",
   {
     title: "列出可用 LLM Provider（子代理调度）",
     description:
@@ -113,7 +113,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_check_updates",
+  "check_updates",
   {
     title: "检查 harness 更新",
     description:
@@ -130,13 +130,13 @@ server.registerTool(
       "\n- 已安装版本：" + (result.installed ?? "?") +
       "\n- 最新版本：" + (result.latest ?? "?") +
       "\n- 是否有更新：" + (result.hasUpdate ? "是" : "否") +
-      (result.hasUpdate ? "\n需要时可用 dsh_desktop_apply_update 后台自动安装（无感，验证失败自动回滚）。" : ""),
+      (result.hasUpdate ? "\n需要时可用 apply_update 后台自动安装（无感，验证失败自动回滚）。" : ""),
     );
   },
 );
 
 server.registerTool(
-  "dsh_desktop_apply_update",
+  "apply_update",
   {
     title: "安装更新（后台自动）",
     description:
@@ -154,7 +154,7 @@ server.registerTool(
 /* ---- Office 工具（文件级 office-docx + Word/WPS COM 应用通道） ---- */
 
 server.registerTool(
-  "dsh_desktop_office_detect",
+  "office_detect",
   {
     title: "检测办公软件环境",
     description:
@@ -172,7 +172,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_docx_read",
+  "docx_read",
   {
     title: "读取 Word 文档（.docx）",
     description:
@@ -189,7 +189,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_docx_from_markdown",
+  "docx_from_markdown",
   {
     title: "生成 Word 文档（markdown → .docx）",
     description:
@@ -208,7 +208,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_xlsx_read",
+  "xlsx_read",
   {
     title: "读取 Excel 表格（.xlsx）",
     description:
@@ -229,7 +229,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_xlsx_write",
+  "xlsx_write",
   {
     title: "生成 Excel 表格（.xlsx）",
     description:
@@ -250,7 +250,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_word_export_pdf",
+  "word_export_pdf",
   {
     title: "Word 导出 PDF",
     description:
@@ -268,7 +268,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_word_open",
+  "word_open",
   {
     title: "用 Word 打开文档",
     description:
@@ -285,7 +285,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_office_verify",
+  "office_verify",
   {
     title: "验证 Word COM 自动化可用",
     description:
@@ -300,7 +300,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_open_folder",
+  "open_folder",
   {
     title: "在资源管理器中打开目录",
     description: "在系统文件管理器中打开指定目录（默认打开当前工作区目录）。",
@@ -315,7 +315,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_open_logs",
+  "open_logs",
   {
     title: "打开 harness 日志目录",
     description: "在系统文件管理器中打开桌面端日志目录（dsh-web.log 所在目录）。",
@@ -325,7 +325,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_open_terminal",
+  "open_terminal",
   {
     title: "打开终端模式窗口",
     description: "打开桌面端的“终端模式”窗口（headless 快速执行任务）。",
@@ -335,7 +335,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_restart_app",
+  "restart_app",
   {
     title: "重启桌面应用",
     description:
@@ -353,7 +353,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_switch_workspace",
+  "switch_workspace",
   {
     title: "切换工作区",
     description: "切换 harness 工作区目录并重启服务（会话按工作区隔离）。",
@@ -368,7 +368,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_describe_image",
+  "describe_image",
   {
     title: "图片识别（多模态视觉模型，注意力对齐）",
     description:
@@ -400,7 +400,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_api_balance",
+  "api_balance",
   {
     title: "查询 DeepSeek API 余额",
     description:
@@ -418,7 +418,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_api_usage",
+  "api_usage",
   {
     title: "查询 API 用量与成本",
     description:
@@ -445,7 +445,7 @@ server.registerTool(
 /* ---- Windows 电脑操控（Codex/Claude computer-use 风格） ---- */
 
 server.registerTool(
-  "dsh_desktop_computer_screenshot",
+  "computer_screenshot",
   {
     title: "电脑截图（看屏幕）",
     description:
@@ -463,13 +463,13 @@ server.registerTool(
       "截图已保存：" + result.path +
       "（" + result.width + "×" + result.height + "）" +
       (result.crop ? "；实际裁剪 " + result.crop.x + "," + result.crop.y + " " + result.crop.width + "×" + result.crop.height : "") +
-      (result.description ? "\n识别结果" + secs + "：\n" + result.description : (result.descriptionError ? "\n识别失败：" + result.descriptionError : "\n（本地视觉模型未启用，可自行 read 或用 dsh_desktop_describe_image 识别）")),
+      (result.description ? "\n识别结果" + secs + "：\n" + result.description : (result.descriptionError ? "\n识别失败：" + result.descriptionError : "\n（本地视觉模型未启用，可自行 read 或用 describe_image 识别）")),
     );
   },
 );
 
 server.registerTool(
-  "dsh_desktop_computer_screen",
+  "computer_screen",
   {
     title: "获取屏幕信息",
     description: "返回主屏幕物理分辨率（像素，与截图文件同一坐标系；所有电脑操控坐标均以此为准）。",
@@ -482,7 +482,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_computer_mouse",
+  "computer_mouse",
   {
     title: "鼠标操控",
     description:
@@ -503,7 +503,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_computer_keyboard",
+  "computer_keyboard",
   {
     title: "键盘操控",
     description:
@@ -521,7 +521,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_computer_window",
+  "computer_window",
   {
     title: "窗口操控",
     description:
@@ -545,7 +545,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_computer_clipboard",
+  "computer_clipboard",
   {
     title: "剪贴板读写",
     description: "读取或写入系统剪贴板文本。",
@@ -561,7 +561,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_computer_launch",
+  "computer_launch",
   {
     title: "启动应用",
     description: "按路径或系统可识别名称启动应用（如 C:\\Windows\\notepad.exe 或 calc）。",
@@ -576,7 +576,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_schedule",
+  "schedule",
   {
     title: "定时任务与提醒",
     description:
@@ -622,7 +622,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_system_doctor",
+  "system_doctor",
   {
     title: "Windows 环境体检",
     description:
@@ -631,13 +631,13 @@ server.registerTool(
   },
   async () => {
     const items = await call("systemDoctor");
-    const lines = items.map((i) => (i.ok ? "✓ " : "✗ ") + i.title + "：" + i.detail + (i.fix ? "（可用 dsh_desktop_system_fix 修复：" + i.fix.id + "）" : ""));
+    const lines = items.map((i) => (i.ok ? "✓ " : "✗ ") + i.title + "：" + i.detail + (i.fix ? "（可用 system_fix 修复：" + i.fix.id + "）" : ""));
     return text("Windows 环境体检（" + items.filter((i) => i.ok).length + "/" + items.length + " 项正常）：\n" + lines.join("\n"));
   },
 );
 
 server.registerTool(
-  "dsh_desktop_system_fix",
+  "system_fix",
   {
     title: "修复 Windows 环境问题",
     description:
@@ -646,18 +646,18 @@ server.registerTool(
       fix: z.object({
         type: z.enum(["simple", "admin"]).describe("simple=无需管理员；admin=需要 UAC 提权"),
         id: z.enum(["longpath", "devmode", "execpolicy", "utf8"]).describe("修复项"),
-      }).describe("来自 dsh_desktop_system_doctor 的 fix 字段"),
+      }).describe("来自 system_doctor 的 fix 字段"),
     }),
   },
   async (args) => {
     const result = await call("systemFix", { fix: args.fix });
     if (!result.ok) throw new Error(result.error || "修复失败");
-    return text("修复完成：" + (result.detail || args.fix.id) + "\n建议重新运行 dsh_desktop_system_doctor 确认。");
+    return text("修复完成：" + (result.detail || args.fix.id) + "\n建议重新运行 system_doctor 确认。");
   },
 );
 
 server.registerTool(
-  "dsh_desktop_system_env",
+  "system_env",
   {
     title: "管理用户环境变量",
     description:
@@ -696,7 +696,7 @@ server.registerTool(
 // ---- 项目代码地图（长代码/大项目：首次精读建图 + 更新后同步补图） ----
 
 server.registerTool(
-  "dsh_desktop_project_map_get",
+  "project_map_get",
   {
     title: "读取项目代码地图",
     description:
@@ -711,7 +711,7 @@ server.registerTool(
     const lines = [];
     lines.push(result.exists
       ? "项目地图已存在（更新于 " + new Date(result.updatedAt).toLocaleString() + "，跟踪 " + result.tracked + " 个文件）。"
-      : "项目地图不存在——请按 long-code 方法首次仔细精读项目后，用 dsh_desktop_project_map_set 保存地图。");
+      : "项目地图不存在——请按 long-code 方法首次仔细精读项目后，用 project_map_set 保存地图。");
     if (result.exists) {
       lines.push("stale 文件 " + result.staleCount + " 个" + (result.staleFiles.length ? "：" + result.staleFiles.join("、") : ""));
       if (result.gitHeadChanged) lines.push("提示：git HEAD 已变化但指纹未变，请按需核对。");
@@ -723,7 +723,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_project_map_status",
+  "project_map_status",
   {
     title: "查询代码地图同步状态",
     description:
@@ -734,7 +734,7 @@ server.registerTool(
   async () => {
     const result = await call("projectMapStatus");
     if (!result.ok) throw new Error(result.error || "查询失败");
-    if (!result.exists) return text("项目地图不存在（可用 dsh_desktop_project_map_get 建图指引）。");
+    if (!result.exists) return text("项目地图不存在（可用 project_map_get 建图指引）。");
     return text(
       "地图存在（更新于 " + new Date(result.updatedAt).toLocaleString() + "，跟踪 " + result.tracked + " 个文件）。\n" +
       "stale 文件 " + result.staleCount + " 个" + (result.staleFiles.length ? "：" + result.staleFiles.join("、") : "（地图全部最新）") +
@@ -744,7 +744,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_project_map_set",
+  "project_map_set",
   {
     title: "保存/更新项目代码地图",
     description:
@@ -767,7 +767,7 @@ server.registerTool(
 // ---- 多会话编辑占用 + 变更日志（并发互不干扰 + 可回溯） ----
 
 server.registerTool(
-  "dsh_desktop_edit_claim",
+  "edit_claim",
   {
     title: "认领文件编辑权",
     description:
@@ -792,7 +792,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_edit_release",
+  "edit_release",
   {
     title: "释放文件编辑权",
     description: "改完并验证后释放本会话对文件的占用；files 缺省释放本会话全部占用。",
@@ -808,7 +808,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_edit_status",
+  "edit_status",
   {
     title: "查询文件编辑占用",
     description:
@@ -833,7 +833,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_edit_journal",
+  "edit_journal",
   {
     title: "查询变更日志",
     description: "查询工作区变更日志（.dsh/change-journal.jsonl）：谁在何时认领/释放/快照了哪些文件，完整可回溯。",
@@ -855,7 +855,7 @@ server.registerTool(
 // ---- Git（白名单安全操作，保证代码可回溯） ----
 
 server.registerTool(
-  "dsh_desktop_git_status",
+  "git_status",
   {
     title: "Git 状态",
     description: "当前工作区 git 状态（porcelain：分支、变更文件、未跟踪文件）。非 git 仓库会报错（可先 git_init）。",
@@ -869,7 +869,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_diff",
+  "git_diff",
   {
     title: "Git 差异",
     description: "查看差异：默认未暂存改动；staged=true 看暂存区；path 指定单个文件。",
@@ -886,7 +886,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_log",
+  "git_log",
   {
     title: "Git 提交日志",
     description: "最近 n 条提交（单行）。",
@@ -902,7 +902,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_commit",
+  "git_commit",
   {
     title: "Git 提交快照",
     description:
@@ -921,7 +921,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_branch",
+  "git_branch",
   {
     title: "Git 分支列表",
     description: "列出本地分支（当前分支带 *）。",
@@ -935,7 +935,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_checkout",
+  "git_checkout",
   {
     title: "Git 切换/新建分支",
     description: "切换分支（create=true 新建并切换）。有未提交变更时自动 stash 保护（可用 git_stash action=pop 恢复）。",
@@ -952,7 +952,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_restore",
+  "git_restore",
   {
     title: "Git 回滚恢复",
     description: "回滚改动：git restore。默认丢弃全部未暂存改动；staged=true 撤销暂存；path 只恢复某个文件。危险操作，回滚前确认。",
@@ -969,7 +969,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_stash",
+  "git_stash",
   {
     title: "Git 暂存栈",
     description: "stash 管理：action=list 列出；push 暂存当前改动（可带 message）；pop 恢复（index 从 0 开始，缺省最近一条）。",
@@ -989,12 +989,12 @@ server.registerTool(
 // ---- 跨会话消息（P0-1）：给另一个对话发消息 / 查看自己的未读（收件箱独立于官方会话文件） ----
 
 server.registerTool(
-  "dsh_desktop_send_session_message",
+  "send_session_message",
   {
     title: "跨会话发消息",
     description:
       "给另一个对话（会话）发一条跨会话消息：目标会话的右侧面板顶部会出现“来自本会话 X”折叠卡片，" +
-      "展开后可见消息并可交给该会话处理（可配合 dsh_desktop_session_inbox_status 查询对方是否已读）。" +
+      "展开后可见消息并可交给该会话处理（可配合 session_inbox_status 查询对方是否已读）。" +
       "典型用法：本会话完成了对方请求的某件事、或需要把结论/任务转交另一个对话时。" +
       "fromSessionId 缺省为当前激活会话（主进程自动判定）；给会话 id 相同（自己）发消息会被拒绝。" +
       "toSessionId 可从 EnvPanel「会话」行或会话列表/交接文件中获取（形如 session-xxxxxxxx-…）。",
@@ -1019,7 +1019,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_session_inbox_status",
+  "session_inbox_status",
   {
     title: "查询跨会话消息",
     description:
@@ -1049,7 +1049,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_session_inbox_mark_read",
+  "session_inbox_mark_read",
   {
     title: "标记跨会话消息已读",
     description: "把指定会话收件箱的消息标记为已读：ids 缺省标记全部；也可只标记指定消息 id（从 inbox_status 的返回中取）。",
@@ -1066,7 +1066,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_init",
+  "git_init",
   {
     title: "Git 初始化仓库",
     description: "在当前工作区 git init（提供可回溯的基础；已初始化则返回提示）。",
@@ -1082,12 +1082,12 @@ server.registerTool(
 // ---- GitHub 集成（设备码登录 / 远程仓库 / 代码搜索 / 分支协作） ----
 
 server.registerTool(
-  "dsh_desktop_github_status",
+  "github_status",
   {
     title: "GitHub 登录与远程状态",
     description:
       "查询 GitHub 集成状态：是否登录（login）、本地仓库当前分支、origin 远程地址。" +
-      "未登录时提示用户用 dsh_desktop_github_login 登录。",
+      "未登录时提示用户用 github_login 登录。",
     inputSchema: z.object({}),
   },
   async () => {
@@ -1097,25 +1097,25 @@ server.registerTool(
     if (result.authed) {
       lines.push("GitHub 已登录：" + result.login + (result.name ? "（" + result.name + "）" : "") + (result.htmlUrl ? " · " + result.htmlUrl : ""));
     } else {
-      lines.push("GitHub 未登录——可调 dsh_desktop_github_login 快速登录（设备码）。");
+      lines.push("GitHub 未登录——可调 github_login 快速登录（设备码）。");
     }
     lines.push("当前分支：" + (result.branch || "?"));
-    lines.push("远程 origin：" + (result.remote ? result.remote.split("\n")[0] : "未关联——登录后用 dsh_desktop_github_remote_setup 一键创建私有仓库并推送"));
+    lines.push("远程 origin：" + (result.remote ? result.remote.split("\n")[0] : "未关联——登录后用 github_remote_setup 一键创建私有仓库并推送"));
     if (result.visibility) {
       lines.push("仓库可见性：" + (result.visibility === 'public' ? '完全公开（任何人可下载）' : (result.visibility === 'private' ? '私有' : result.visibility)) + " · " + (result.repoHtmlUrl || ""));
-      lines.push("切换可见性用 dsh_desktop_github_set_visibility（公开前确认无密钥/个人信息）。");
+      lines.push("切换可见性用 github_set_visibility（公开前确认无密钥/个人信息）。");
     }
     return text(lines.join("\n"));
   },
 );
 
 server.registerTool(
-  "dsh_desktop_github_login",
+  "github_login",
   {
     title: "GitHub 快速登录（设备码）",
     description:
       "发起 GitHub 设备码登录：返回验证网址与用户码。请把网址和用户码展示给用户（打开网址、输入用户码、授权），" +
-      "然后调 dsh_desktop_github_login_wait 等待完成。无需 gh CLI、无需手动复制 token。",
+      "然后调 github_login_wait 等待完成。无需 gh CLI、无需手动复制 token。",
     inputSchema: z.object({}),
   },
   async () => {
@@ -1126,17 +1126,17 @@ server.registerTool(
       "1. 打开 " + result.verificationUri + "\n" +
       "2. 输入用户码：" + result.userCode + "\n" +
       "3. 点授权（scope: repo，用于私有仓库与代码搜索）\n\n" +
-      "完成后调用 dsh_desktop_github_login_wait 等待登录结果。",
+      "完成后调用 github_login_wait 等待登录结果。",
     );
   },
 );
 
 server.registerTool(
-  "dsh_desktop_github_login_wait",
+  "github_login_wait",
   {
     title: "等待 GitHub 登录完成",
     description:
-      "轮询等待设备码授权结果（调用前需已执行 dsh_desktop_github_login；用户完成授权后本调用返回登录成功）。最多等待约 10 分钟。",
+      "轮询等待设备码授权结果（调用前需已执行 github_login；用户完成授权后本调用返回登录成功）。最多等待约 10 分钟。",
     inputSchema: z.object({}),
   },
   async () => {
@@ -1144,17 +1144,17 @@ server.registerTool(
     while (Date.now() < deadline) {
       const r = await call("githubLoginPoll");
       if (r.ok && r.pending === false) {
-        return text("GitHub 登录成功：" + r.login + (r.name ? "（" + r.name + "）" : "") + "\n接下来可用 dsh_desktop_github_remote_setup 一键关联远程仓库。");
+        return text("GitHub 登录成功：" + r.login + (r.name ? "（" + r.name + "）" : "") + "\n接下来可用 github_remote_setup 一键关联远程仓库。");
       }
       if (!r.ok) throw new Error(r.error || "登录失败");
       await new Promise((res) => setTimeout(res, (r.slowDown ? 10 : 5) * 1000));
     }
-    return text("等待超时：用户未在 10 分钟内完成授权。可重新调 dsh_desktop_github_login 再试。");
+    return text("等待超时：用户未在 10 分钟内完成授权。可重新调 github_login 再试。");
   },
 );
 
 server.registerTool(
-  "dsh_desktop_github_remote_setup",
+  "github_remote_setup",
   {
     title: "一键关联 GitHub 远程仓库并推送",
     description:
@@ -1176,7 +1176,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_github_search_code",
+  "github_search_code",
   {
     title: "GitHub 代码搜索",
     description:
@@ -1201,7 +1201,7 @@ server.registerTool(
 // ---- Git 分支协作（push/pull/merge，全部禁 force） ----
 
 server.registerTool(
-  "dsh_desktop_github_set_visibility",
+  "github_set_visibility",
   {
     title: "切换仓库可见性",
     description:
@@ -1219,10 +1219,10 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_push",
+  "git_push",
   {
     title: "Git 推送到远程",
-    description: "推送当前分支到远程（-u origin <branch>；禁 force）。未关联远程先调 dsh_desktop_github_remote_setup。",
+    description: "推送当前分支到远程（-u origin <branch>；禁 force）。未关联远程先调 github_remote_setup。",
     inputSchema: z.object({
       branch: z.string().optional().describe("分支名（缺省当前分支）"),
     }),
@@ -1235,7 +1235,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_pull",
+  "git_pull",
   {
     title: "Git 拉取（仅快进）",
     description: "从远程拉取（--ff-only，绝不产生意外合并）。",
@@ -1251,7 +1251,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_merge",
+  "git_merge",
   {
     title: "Git 合并分支",
     description: "把指定分支合并进当前分支（优先快进）。冲突时按 resolving-merge-conflicts skill 处理。",
@@ -1267,7 +1267,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_git_remote",
+  "git_remote",
   {
     title: "Git 远程列表",
     description: "查看远程仓库列表（git remote -v）。",
@@ -1283,7 +1283,7 @@ server.registerTool(
 // ---- 外部机器人桥：企业微信推送 / 机器人状态 ----
 
 server.registerTool(
-  "dsh_desktop_wechat_push",
+  "wechat_push",
   {
     title: "企业微信推送",
     description:
@@ -1301,7 +1301,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_bot_status",
+  "bot_status",
   {
     title: "机器人状态",
     description: "查询 QQ 机器人与企业微信推送的配置与连接状态。",
@@ -1322,13 +1322,13 @@ server.registerTool(
 // ---- 文生图（主模型写 prompt，云端生图模型执行） ----
 
 server.registerTool(
-  "dsh_desktop_generate_image",
+  "generate_image",
   {
     title: "文生图",
     description:
       "调用配置的云端文生图模型（OpenAI 兼容 images/generations，如硅基流动 FLUX / 通义万相）生成图片。" +
       "主模型负责写好 prompt（中文即可，描述画面内容/风格/构图），生成结果保存到工作区 .dsh-attachments/ 并返回文件路径。" +
-      "生成后用 dsh_desktop_open_folder 打开附件目录或 read_image 查看。需先在桌面端设置页「图片生成」块配置 baseUrl/apiKey/model。",
+      "生成后用 open_folder 打开附件目录或 read_image 查看。需先在桌面端设置页「图片生成」块配置 baseUrl/apiKey/model。",
     inputSchema: z.object({
       prompt: z.string().describe("画面描述 prompt（中文，写清主体/场景/风格/光影/构图）"),
       size: z.string().optional().describe("尺寸（服务商支持值，如 1024x1024 / 768x1024 / 1440x720；缺省用配置默认）"),
@@ -1348,7 +1348,7 @@ server.registerTool(
 // ---- UI 内省（读桌面端自己窗口的 DOM：结构化定位/精确点击/读文本/自窗口截图） ----
 
 server.registerTool(
-  "dsh_desktop_ui_snapshot",
+  "ui_snapshot",
   {
     title: "UI 元素清单（桌面端窗口）",
     description:
@@ -1371,12 +1371,12 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_ui_click",
+  "ui_click",
   {
     title: "UI 精确点击（桌面端窗口）",
     description:
       "在桌面端窗口内精确点击：text=按按钮/链接的文本匹配（取第 index 个，默认 0），selector=按 CSS 选择器。" +
-      "先 dsh_desktop_ui_snapshot 看有哪些元素再点；点击后可用 ui_text/ui_capture 验证结果。",
+      "先 ui_snapshot 看有哪些元素再点；点击后可用 ui_text/ui_capture 验证结果。",
     inputSchema: z.object({
       text: z.string().optional().describe("按文本匹配（aria-label/title/innerText 包含即命中）"),
       selector: z.string().optional().describe("按 CSS 选择器（优先于 text）"),
@@ -1387,14 +1387,14 @@ server.registerTool(
     const result = await call("uiClick", { text: args.text, selector: args.selector, index: args.index });
     if (!result.ok) throw new Error(result.error || "点击失败");
     if (result.error === 'not found') {
-      return text("未找到匹配元素（候选 " + (result.candidates || 0) + " 个）——先 dsh_desktop_ui_snapshot 确认元素的文本/位置。");
+      return text("未找到匹配元素（候选 " + (result.candidates || 0) + " 个）——先 ui_snapshot 确认元素的文本/位置。");
     }
     return text("已点击 <" + result.tag + ">" + (result.text ? " '" + result.text + "'" : ""));
   },
 );
 
 server.registerTool(
-  "dsh_desktop_ui_text",
+  "ui_text",
   {
     title: "读取 UI 元素文本",
     description: "读取桌面端窗口内某元素的文本内容（CSS 选择器）：用于验证点击结果/面板状态，比截图 OCR 可靠且零成本。",
@@ -1412,7 +1412,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "dsh_desktop_ui_capture",
+  "ui_capture",
   {
     title: "截桌面端自己窗口的图",
     description:
