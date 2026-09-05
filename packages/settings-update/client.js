@@ -1395,7 +1395,37 @@ window.__ModuleLoader__.load({
               .catch(() => {
                 // 降级：注入文字引用（多模态模型可用 read_image 查看原图）
                 try { d.injectText('\u3010\u622a\u56fe\u3011\u5df2\u4fdd\u5b58\uff1a' + (payload && payload.path || '') + '\uff08\u53ef\u7528 read_image \u67e5\u770b\u539f\u56fe\uff09'); } catch { /* 忽略 */ }
-              });
+              });          } catch { /* 忽略 */ }
+        });
+        return off;
+      }, [inputActions]);
+
+      // 桌面端层附加图片（composerAttach / dsh:attach-ready）：主进程读文件直送，
+      // 等价用户"粘贴/附加图片"——经官方 convService 注册草稿图，但**不登记 pendingShots**
+      // （截图补救的粘贴图兜底正是按"未登记草稿图"收集，本通道用于真实验证与 agent 直附）。
+      react.useEffect(() => {
+        const d = api();
+        if (!d || typeof d.onAttachReady !== 'function') return undefined;
+        const off = d.onAttachReady((payload) => {
+          try {
+            const files = (payload && payload.files) || [];
+            if (!files.length) return;
+            (async () => {
+              for (const f of files) {
+                try {
+                  if (!f || !f.dataUrl) continue;
+                  if (!convService || typeof convService.createDraftImages !== 'function') continue;
+                  if (!inputActions || typeof inputActions.addImages !== 'function') continue;
+                  const res = await fetch(f.dataUrl);
+                  const blob = await res.blob();
+                  const file = new File([blob], f.name || ('attach-' + Date.now() + '.png'), { type: f.mime || 'image/png' });
+                  const images = convService.createDraftImages([file]);
+                  if (!inputActions.addImages(images.map((it) => it.id)) && typeof convService.releaseDraftImages === 'function') {
+                    convService.releaseDraftImages(images);
+                  }
+                } catch { /* 单张失败不影响其余 */ }
+              }
+            })().catch(() => {});
           } catch { /* 忽略 */ }
         });
         return off;

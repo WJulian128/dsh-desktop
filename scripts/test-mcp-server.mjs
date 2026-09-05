@@ -78,6 +78,7 @@ const rpc = createServer((req, res) => {
     if (payload.method === 'sessionMessageSend') return send(200, { ok: true, result: { ok: true, message: { id: 'm1', from: 'session-a', fromTitle: '会话甲', text: 'hello' } } });
     if (payload.method === 'sessionInboxStatus') return send(200, { ok: true, result: { ok: true, items: [{ id: 'm1', from: 'session-a', fromTitle: '会话甲', text: 'hello', time: 1700000000000, read: false }], unread: 1 } });
     if (payload.method === 'sessionInboxMarkRead') return send(200, { ok: true, result: { ok: true, marked: 1 } });
+    if (payload.method === 'composerAttach') return send(200, { ok: true, result: { ok: true, attached: ['a.png'], errors: [] } });
     if (payload.method === 'uiSnapshot') return send(200, { ok: true, result: { ok: true, url: 'http://x', title: 't', vw: 1280, vh: 800, dpr: 1, elements: [{ tag: 'button', text: '保存', id: '', cls: '', x: 10, y: 20, w: 80, h: 30 }] } });
     if (payload.method === 'uiClick') return send(200, { ok: true, result: { ok: true, tag: 'button', text: '保存' } });
     if (payload.method === 'uiText') return send(200, { ok: true, result: { ok: true, text: '面板文本' } });
@@ -161,6 +162,7 @@ try {
   check('has dsh_desktop_send_session_message', names.includes('send_session_message'), '');
   check('has dsh_desktop_session_inbox_status', names.includes('session_inbox_status'), '');
   check('has dsh_desktop_session_inbox_mark_read', names.includes('session_inbox_mark_read'), '');
+  check('has dsh_desktop_composer_attach', names.includes('composer_attach'), '');
 
   const doctor = await client.callTool({ name: 'system_doctor', arguments: {} });
   const doctorText = (doctor.content || []).map((c) => c.text || '').join('\n');

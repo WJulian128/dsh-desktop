@@ -107,6 +107,9 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   screenshotRescue: (payload) => ipcRenderer.invoke('dsh:screenshot-rescue', payload),
   // 截图补救进度：主进程每完成一张推送 { done, total }，页面更新输入框占位文案
   onRescueProgress: (cb) => subscribe('dsh:rescue-progress', cb),
+  // 桌面端层附加图片到输入框草稿（主进程读文件 → dsh:attach-ready；不经系统剪贴板/键盘）
+  composerAttach: (paths) => ipcRenderer.invoke('dsh:composer-attach', { paths }),
+  onAttachReady: (cb) => subscribe('dsh:attach-ready', cb),
   // 机器人桥：QQ 网关 / 企业微信推送的配置读写与测试
   botConfig: () => ipcRenderer.invoke('dsh:bot-config'),
   botConfigSet: (payload) => ipcRenderer.invoke('dsh:bot-config-set', payload),

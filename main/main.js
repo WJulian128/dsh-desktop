@@ -2854,6 +2854,7 @@ function startRpc() {
     if (result.ok && result.marked) broadcastPanelRefresh('session-inbox');
     return result;
   });
+  rpc.on('composerAttach', (params) => composerAttachFiles(params || {}));
 
   return rpc.start();
 }
@@ -2918,6 +2919,45 @@ function registerIpc() {
     if (headlessRunner) headlessRunner.cancel();
     return { ok: true };
   });
+
+  // 桌面端层面向会话输入框附加图片（等价"放入图片"，不经系统剪贴板/键盘）：
+  // 主进程读文件 → dsh:attach-ready 推给页面 → 页面经官方 convService 注册草稿图
+  // （不登记 pendingShots，与粘贴/附加行为一致；用于截图补救粘贴图场景测试与 agent 直附）。
+  ipcMain.handle('dsh:composer-attach', (_event, payload) => {
+    return composerAttachFiles(payload || {});
+  });
+}
+
+/* 附加文件到当前会话输入框草稿（IPC 与 RPC 共用）。 */
+function composerAttachFiles(payload) {
+  try {
+    const paths = Array.isArray(payload && payload.paths) ? payload.paths.map((p) => String(p)) : [];
+    if (!paths.length) return { ok: false, error: '\u7f3a\u5c11 paths\uff08\u8981\u9644\u52a0\u7684\u56fe\u7247\u6587\u4ef6\u5217\u8868\uff09' };
+    const IMAGE_EXT = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+    const files = [];
+    const errors = [];
+    for (const p of paths.slice(0, 9)) {
+      try {
+        const ext = path.extname(p).toLowerCase();
+        const mime = IMAGE_EXT[ext];
+        if (!mime) { errors.push(path.basename(p) + '\uff08\u4ec5\u652f\u6301\u56fe\u7247\uff09'); continue; }
+        const buf = fs.readFileSync(p);
+        if (buf.length > 20 * 1024 * 1024) { errors.push(path.basename(p) + '\uff08\u8d85\u8fc720MB\uff09'); continue; }
+        files.push({ path: p, name: path.basename(p), mime, size: buf.length, dataUrl: 'data:' + mime + ';base64,' + buf.toString('base64') });
+      } catch (err) {
+        errors.push(p + '\uff08' + ((err && err.message) || String(err)) + '\uff09');
+      }
+    }
+    if (!files.length) return { ok: false, error: '\u65e0\u6cd5\u9644\u52a0\u4efb\u4f55\u6587\u4ef6\uff1a' + (errors.join('; ') || '\u672a\u77e5') };
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('dsh:attach-ready', { files });
+    } else {
+      return { ok: false, error: '\u4e3b\u7a97\u53e3\u4e0d\u53ef\u7528' };
+    }
+    return { ok: true, attached: files.map((f) => f.name), errors };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
 }
 
 /* ---------- MCP / 插件管理（设置页） ---------- */

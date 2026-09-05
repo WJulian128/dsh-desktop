@@ -1066,6 +1066,26 @@ server.registerTool(
 );
 
 server.registerTool(
+  "composer_attach",
+  {
+    title: "附加图片到输入框",
+    description:
+      "把本地图片文件直接放入当前会话输入框草稿（等价用户粘贴/附加图片，但不发送）。" +
+      "经桌面端主进程读文件推送给页面，不经系统剪贴板——键盘注入/剪贴板不可靠时用它。" +
+      "典型场景：纯文本模型会话需把截图/图片交给模型时，先放入输入框再随消息发送，或配合发送被拒后的自动识图补救。",
+    inputSchema: z.object({
+      paths: z.array(z.string()).describe("本地图片文件绝对路径列表（png/jpg/jpeg/webp/gif，单张 ≤20MB，最多 9 张）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("composerAttach", { paths: args.paths });
+    if (!result.ok) throw new Error(result.error || "附加失败");
+    return text("已放入输入框草稿：" + result.attached.join("、") +
+      (result.errors && result.errors.length ? "\n未附加：" + result.errors.join("；") : ""));
+  },
+);
+
+server.registerTool(
   "git_init",
   {
     title: "Git 初始化仓库",
