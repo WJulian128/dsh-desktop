@@ -1414,12 +1414,48 @@ window.__ModuleLoader__.load({
           try { d.clientDebug({ src: 'rescue', step, val }); } catch { /* 忽略 */ }
         };
         let rescueUserText = ''; // 补救时用户原话（进度更新占位时保留原话前缀）
-        const doRescue = () => {
+        // 已处理过的草稿图片 id（防同一粘贴图多次拒图时重复识别）；120s 超时清理同 pendingShots
+        const rescuedDraftIds = react.useRef(new Set());
+        const lastRescueAt = react.useRef(0); // rescue 触发冷却（observer+轮询双通道防重 / 关键词误报抑制）
+        // File → data:URL（分块 btoa，防大字符串栈溢出）
+        const fileToDataUrl = (file) => new Promise((resolve, reject) => {
+          try {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
+            reader.readAsDataURL(file);
+          } catch (err) { reject(err); }
+        });
+        const doRescue = async () => {
+          // 冷却：同一轮拒绝提示会被 observer+轮询多次命中，且对话流出现关键词文本可能误触发；
+          // 8s 冷却 + shots 级 done 双重防重（误触发时草稿无图也会被兜底收集拦住）。
+          const now = Date.now();
+          if (now - lastRescueAt.current < 8000) return;
           const shots = pendingShots.current.slice();
           pendingShots.current = [];
+          // 粘贴/附加的图片从未登记（只有截图按钮走 onScreenshotReady 登记）——从官方草稿注册表
+          // 兜底收集：发送被拒（纯文本模型不支持图片）后官方仍把图片保留在 draft registry，
+          // 这里把所有仍存活的草稿附件（未被本组件登记过/未处理过）转 dataUrl 一并识别，绝不漏图。
+          try {
+            if (convService && convService.draftAttachments instanceof Map) {
+              for (const [id, att] of convService.draftAttachments) {
+                if (rescuedDraftIds.current.has(id)) continue;
+                const file = att && att.file;
+                if (!file || typeof file.size !== 'number' || file.size <= 0 || file.size > 20 * 1024 * 1024) continue;
+                if (shots.some((s) => (s.imageIds || []).indexOf(id) >= 0)) continue; // 截图登记过的不重复
+                const dataUrl = await fileToDataUrl(file);
+                if (dataUrl && dataUrl.indexOf('data:image/') === 0) {
+                  shots.push({ path: '', imageIds: [id], dataUrl });
+                }
+              }
+            }
+          } catch (err) { /* 兜底收集失败不阻塞已登记截图 */ }
           if (!shots.length) return;
           if (shots[0].done) return; // 防重复
           shots.forEach((s) => { s.done = true; });
+          lastRescueAt.current = Date.now();
+          // 登记本轮处理的草稿 id（registry 里的图 removeImage 后仍在，靠它防同一图二次识别）
+          shots.forEach((s) => { (s.imageIds || []).forEach((id) => rescuedDraftIds.current.add(id)); });
           debug('start', { n: shots.length });
           // 过滤：用户已从草稿删掉的图不再识别（draftImages 只返回仍存活的附件）
           let finalShots = [];
@@ -1444,7 +1480,7 @@ window.__ModuleLoader__.load({
             }
           } catch { /* 忽略 */ }
           // 占位提示：识别与发送都在主进程完成，页面不参与发送
-          const placeholder = '\u3010\u622a\u56fe\u3011\u89c6\u89c9\u8bc6\u522b\u4e2d\u2026\uff08\u5171 ' + finalShots.length +
+          const placeholder = '\u3010\u56fe\u7247\u3011\u89c6\u89c9\u8bc6\u522b\u4e2d\u2026\uff08\u5171 ' + finalShots.length +
             ' \u5f20\uff0c\u5b8c\u6210\u540e\u81ea\u52a8\u53d1\u9001\u5230\u5bf9\u8bdd\uff09';
           const act0 = latestInputActions();
           if (act0 && typeof act0.setDraft === 'function') {
@@ -1453,7 +1489,7 @@ window.__ModuleLoader__.load({
           // 主进程补救：识别全部图片 + 官方 RPC 直发进当前会话——免疫页面重载/重渲染，
           // 根治"识别完不自动发送"（此前页面侧 Promise/输入框提交随重渲染被掐死）。
           if (d && typeof d.screenshotRescue === 'function') {
-            d.screenshotRescue({ shots: finalShots.map((s) => ({ path: s.path })), userText })
+            d.screenshotRescue({ shots: finalShots.map((s) => ({ path: s.path, dataUrl: s.dataUrl })), userText })
               .then((r) => {
                 debug('rescue-rpc', { ok: !!(r && r.ok), sent: !!(r && r.sent) });
                 // 消息已由主进程发出：清掉占位草稿（仅当草稿仍是占位形态——
@@ -1549,8 +1585,8 @@ window.__ModuleLoader__.load({
               } catch { /* 忽略 */ }
             })
           : null;
-        // 安全阀：120s 后清理（用户没发送则图片保持显示、识别结果丢弃）
-        const timeout = setTimeout(() => { pendingShots.current = []; }, 120000);
+        // 安全阀：120s 后清理（用户没发送则图片保持显示、识别结果丢弃；防重集合同步清空）
+        const timeout = setTimeout(() => { pendingShots.current = []; rescuedDraftIds.current.clear(); }, 120000);
         return () => {
           clearTimeout(timeout);
           clearInterval(pollTimer);

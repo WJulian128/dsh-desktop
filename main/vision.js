@@ -36,8 +36,8 @@ function attachmentPath(dshHome, sha256) {
   return path.join(dshHome, 'attachments', 'v1', 'objects', sha256.slice(0, 2), sha256);
 }
 
-/** 解析图片来源：返回 { dataUrl }。 */
-async function resolveImageSource({ path: filePath, url, ref, dshHome, maxBytes = 15 * 1024 * 1024 }) {
+/** 解析图片来源：返回 { data, mediaType }。支持 path / url / 附件引用（ref）/ dataUrl。 */
+async function resolveImageSource({ path: filePath, url, ref, dataUrl, dshHome, maxBytes = 15 * 1024 * 1024 }) {
   let data = null;
   let mediaType = null;
   if (ref) {
@@ -52,11 +52,20 @@ async function resolveImageSource({ path: filePath, url, ref, dshHome, maxBytes 
     if (!fs.existsSync(p)) throw new Error('文件不存在：' + p);
     data = fs.readFileSync(p);
     mediaType = IMAGE_MEDIA_TYPES[path.extname(p).slice(1).toLowerCase()] || 'image/png';
+  } else if (dataUrl) {
+    // 粘贴/附件图（无本地路径）由页面 File 转 dataUrl 传入（截图补救 P1.5）
+    const m = /^data:([^;,]+)?;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || '').trim());
+    if (!m) throw new Error('dataUrl 格式无效（需 data:<mime>;base64,<data>）');
+    data = Buffer.from(m[2], 'base64');
+    const ext = Object.keys(IMAGE_MEDIA_TYPES).find((k) => IMAGE_MEDIA_TYPES[k] === (m[1] || ''));
+    mediaType = m[1] && (m[1] === 'image/jpeg' || m[1] === 'image/webp' || m[1] === 'image/gif' || m[1] === 'image/png')
+      ? m[1]
+      : (ext ? IMAGE_MEDIA_TYPES[ext] : 'image/png');
   } else if (url) {
     data = await fetchUrl(url, maxBytes);
     mediaType = 'image/jpeg';
   } else {
-    throw new Error('需要提供 path、url 或附件引用（ref）');
+    throw new Error('需要提供 path、url、附件引用（ref）或 dataUrl');
   }
   if (data.length === 0) throw new Error('图片为空');
   if (data.length > maxBytes) throw new Error('图片过大（>15MB）');

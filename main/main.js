@@ -5032,16 +5032,18 @@ ipcMain.handle('dsh:screenshot-rescue', async (_event, payload) => {
   // 热态两张（实测单张 25s 级）总耗时接近单张而非相加。map 保序：结果仍按截图顺序排列。
   const runOne = async (s, i) => {
     const pathStr = String((s && s.path) || '');
+    const dataUrl = String((s && s.dataUrl) || '');
     let desc = null;
     let elapsedMs = 0;
     let model = '';
     try {
-      if (visionOk && pathStr) {
+      if (visionOk && (pathStr || dataUrl)) {
         const vb = visionBroadcast();
         vb.send({ phase: 'start' });
         const t0 = Date.now();
         desc = await describeImage(effectiveVision(vision), {
-          path: pathStr,
+          path: pathStr || undefined,
+          dataUrl: dataUrl || undefined,
           dshHome: state.dshHome,
           stream: true,
           onDelta: (text) => vb.send({ phase: 'delta', text }),
@@ -5057,18 +5059,21 @@ ipcMain.handle('dsh:screenshot-rescue', async (_event, payload) => {
     doneCount++;
     sendProgress();
     logLine('[rescue] \u8bc6\u522b\u5b8c\u6210 ' + (i + 1) + '/' + shots.length + '\uff1a' + elapsedMs + 'ms');
-    return { path: pathStr, desc: desc && String(desc).trim() ? String(desc).trim() : null, elapsedMs, model };
+    return { path: pathStr, dataUrl, desc: desc && String(desc).trim() ? String(desc).trim() : null, elapsedMs, model };
   };
   const results = await Promise.all(shots.map((s, i) => runOne(s, i)));
   const parts = results.map((r, i) => {
+    const srcNote = r.path ? '\n\uff08\u539f\u56fe\u4fdd\u7559\u5728\uff1a' + r.path + '\uff09' : '';
     if (r.desc) {
       const modelPart = r.model ? ' ' + r.model : '';
       const secs = r.elapsedMs ? Math.round(r.elapsedMs / 1000) + 's' : '';
-      return '\u3010\u622a\u56fe ' + (i + 1) + '\u3011\u5df2\u901a\u8fc7' + modelPart + ' \u8bc6\u522b' + (secs ? '\uff08\u8017\u65f6 ' + secs + '\uff09' : '') + '\uff1a\n' + r.desc +
-        '\n\uff08\u539f\u56fe\u4fdd\u7559\u5728\uff1a' + r.path + '\uff1b\u5982\u9700\u67e5\u770b\u5c40\u90e8\u7ec6\u8282\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u505a region \u653e\u5927\u8bc6\u522b\uff09';
+      return '\u3010\u56fe\u7247 ' + (i + 1) + '\u3011\u5df2\u901a\u8fc7' + modelPart + ' \u8bc6\u522b' + (secs ? '\uff08\u8017\u65f6 ' + secs + '\uff09' : '') + '\uff1a\n' + r.desc +
+        (srcNote || (r.dataUrl ? '\n\uff08\u6765\u6e90\uff1a\u7c98\u8d34/\u9644\u52a0\u56fe\u7247\uff09' : '')) +
+        '\n\uff08\u5982\u9700\u67e5\u770b\u5c40\u90e8\u7ec6\u8282\uff0c\u53ef\u7528 describe_image \u5bf9\u56fe\u7247\u505a region \u653e\u5927\u8bc6\u522b\uff09';
     }
-    return '\u3010\u622a\u56fe ' + (i + 1) + '\u3011\u5df2\u4fdd\u5b58\u539f\u56fe\uff1a' + r.path +
-      '\n\uff08\u8bc6\u522b\u5931\u8d25/\u8d85\u65f6\uff0c\u53ef\u7528 dsh_desktop_describe_image \u5bf9\u8be5\u56fe\u91cd\u65b0\u8bc6\u522b\uff0c\u6216\u7528 region \u5c40\u90e8\u653e\u5927\u67e5\u770b\u7ec6\u8282\uff09';
+    return '\u3010\u56fe\u7247 ' + (i + 1) + '\u3011\u8bc6\u522b\u5931\u8d25/\u8d85\u65f6\uff0c\u672a\u83b7\u53d6\u63cf\u8ff0' +
+      (srcNote || (r.dataUrl ? '\uff08\u7c98\u8d34\u56fe\u7247\u672a\u843d\u76d8\uff0c\u53ef\u91cd\u65b0\u53d1\u9001\u540e\u518d\u8bd5\uff09' : '')) +
+      '\uff1b\u53ef\u7528 describe_image \u5bf9\u8be5\u56fe\u91cd\u65b0\u8bc6\u522b';
   });
   const finalText = userText ? userText + '\n\n' + parts.join('\n\n') : parts.join('\n\n');
   let sent = false;

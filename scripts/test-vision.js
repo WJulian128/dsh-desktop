@@ -66,6 +66,16 @@ try {
   const descRef = await describeImage(vision, { ref: 'dsh-attachment sha256:' + attId, dshHome });
   check('describeImage resolves attachment ref', typeof descRef === 'string' && descRef.includes('蓝色按钮'), '');
 
+  // 4a. describeImage（dataUrl：粘贴/附件图片无本地路径时的直通通道）
+  const descData = await describeImage(vision, { dataUrl: 'data:image/png;base64,' + png.toString('base64'), dshHome });
+  check('describeImage accepts dataUrl (pasted image)', typeof descData === 'string' && descData.includes('蓝色按钮'), String(descData).slice(0, 60));
+  const userData = lastRequest.body.messages.find((m) => m.role === 'user');
+  const dataPart = userData && userData.content && userData.content[0];
+  check('dataUrl image forwarded to vision model', !!dataPart && dataPart.type === 'image_url' && dataPart.image_url.url.startsWith('data:image/png;base64,'), '');
+  let dataRejected = false;
+  try { await describeImage(vision, { dataUrl: 'not-a-data-url', dshHome }); } catch { dataRejected = true; }
+  check('invalid dataUrl errors clearly', dataRejected, '');
+
   // 4b. 注意力对齐：question 任务条件化
   await describeImage(vision, { path: filePath, dshHome, question: '这个按钮的颜色是什么？' });
   const sysQ = lastRequest.body.messages.find((m) => m.role === 'system');
