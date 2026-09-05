@@ -2417,7 +2417,7 @@ window.__ModuleLoader__.load({
         return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
           h('div', {
             style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', cursor: 'pointer', padding: '2px', borderRadius: '6px' },
-            title: '跨会话消息（点此展开/收起；展开才显示内容并标记已读）',
+            title: '跨会话消息（点击展开查看消息全文；展开即自动标记已读）',
             onClick: toggle,
           },
             h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '6px', color: 'var(--dsw-alias-label-primary)', fontSize: '12px', fontWeight: '600' } },

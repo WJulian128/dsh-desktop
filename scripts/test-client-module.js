@@ -14,7 +14,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
-const BUNDLE = path.join(ROOT, 'node_modules', '@dsh-desktop', 'settings-update', 'client.js');
+// 读取路径与运行时一致（packages/ 源优先——根 node_modules/@dsh-desktop/* 可能是 npm 装的
+// file: 普通拷贝，改动 packages/ 后不同步，会造成“测试绿但 UI 没生效”的假象；boot-preflight
+// 对 profiles 链接同样以 packages/ 源为最优候选）。
+const BUNDLE = path.join(ROOT, 'packages', 'settings-update', 'client.js');
 const failures = [];
 function check(name, ok, detail) {
   console.log((ok ? 'PASS ' : 'FAIL ') + name + (detail ? ' — ' + detail : ''));
@@ -233,7 +236,8 @@ try {
   const rightPanelsHtml = render(composerDock.find((o) => o.options.id === 'desktop-right-panels').component, { sessionId: 'sess-1' });
   check('right panels render env + sched titles', rightPanelsHtml.includes('环境信息') && rightPanelsHtml.includes('模型调度'), '');
   check('right panels are resident right column (520px, two side-by-side)', /right:0/.test(rightPanelsHtml) && /width:520px/.test(rightPanelsHtml), rightPanelsHtml.slice(0, 160));
-  for (const text of ['会话', '工作区', 'harness', '端口', 'Git', '厂商总览']) {
+  for (const text of ['项目', 'harness', '端口', 'Git', '厂商总览',
+    '跨会话消息', '本会话用量']) {
     check('right panels html contains ' + text, rightPanelsHtml.includes(text), '');
   }
   check('env panel no longer shows subagent section (sched panel owns it)', !rightPanelsHtml.includes('子代理（本会话）'), '');
