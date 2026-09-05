@@ -48,6 +48,7 @@ const { startContextWatcher, findActiveSession } = require('./context-watch');
 const { archiveLargeSessions } = require('./session-archive');
 const yaml = require('js-yaml');
 const taskDispatch = require('./task-dispatch');
+const sessionInbox = require('./session-inbox');
 
 const APP_DIR = path.join(__dirname, '..');
 process.env.DSH_APP_DIR = APP_DIR;
@@ -532,6 +533,7 @@ const state = {
   patchDropped: false,   // 注入补丁（MCP/设置分区）因启动失败被去掉时为 true
   permissionMode: settings.get('permissionMode') || 'workspace-write',
   notifyOnComplete: settings.get('notifyOnComplete') !== false,
+  autoCommitRounds: settings.get('autoCommitRounds') !== false, // P0-2：整轮完成自动提交（收尾 git 协议）
   defaultModel: null,    // 从 $DSH_HOME/settings.yaml 读取的默认模型（provider/model）
   visionEnabled: !!(settings.get('vision') && settings.get('vision').enabled),
   autoStart: settings.get('autoStart') === true,
@@ -929,7 +931,109 @@ function dispatchTaskToHarness(text, { send = true } = {}) {
   taskDispatcher.enqueue(String(text), { send });
 }
 
-/* ---------- 任务派发：官方 RPC 优先，剪贴板兜底；队列 + 门控 + 重试 ---------- */
+/* ---------- 跨会话消息（P0-1，Claude Code 借鉴）：session-inbox 收件箱 ---------- */
+
+/** 收件箱根目录 = 桌面端 userData（存储 session-inbox/<toSessionId>.jsonl，不动官方文件）。 */
+function inboxStoreRoot() {
+  return app.getPath('userData');
+}
+
+/** 会话标题：读官方 projcache（<sid>.json record.rows.title.val）；失败返回 null。 */
+function lookupSessionTitle(sessionId) {
+  try {
+    const file = path.join(state.dshHome, 'storages', 'session_projcache', 'sessions', sessionId + '.json');
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const t = doc && doc.record && doc.record.rows && doc.record.rows.title;
+    return t && t.val && typeof t.val === 'string' ? String(t.val).slice(0, 60) : null;
+  } catch { return null; }
+}
+
+/** 当前活动会话兜底（startRpc 内嵌 activeSessionId 的模块级副本：托管工作区最新非子代理会话）。 */
+function fallbackActiveSessionId() {
+  try {
+    const active = findActiveSession(path.join(state.dshHome, 'sessions', workspaceSessionKey(state.workspace)));
+    return active ? active.sessionId : null;
+  } catch { return null; }
+}
+
+/**
+ * 投递一条跨会话消息（MCP/IPC/EnvPanel 共用入口）。
+ * from 未显式指定时取当前激活会话（state.ui 优先）。目标会话正在前台 → 面板推送；
+ * 否则窗口失焦时给系统通知，用户切过去就能看到折叠卡片。
+ */
+function deliverSessionMessage(params) {
+  const to = String((params && params.toSessionId) || '').trim();
+  const from = String((params && params.fromSessionId) || '').trim() ||
+    ((state.ui && state.ui.sessionId) || fallbackActiveSessionId()) || '';
+  if (!to || !from) return { ok: false, error: '\u7f3a\u5c11\u76ee\u6807/\u6765\u6e90\u4f1a\u8bdd id' };
+  if (to === from) return { ok: false, error: '\u4e0d\u80fd\u7ed9\u81ea\u5df1\u53d1\u6d88\u606f\uff08toSessionId === fromSessionId\uff09' };
+  const text = String((params && params.text) || '');
+  const result = sessionInbox.appendMessage(inboxStoreRoot(), to, {
+    from,
+    fromTitle: lookupSessionTitle(from) || String(from).slice(0, 12),
+    text,
+  });
+  if (!result.ok) return result;
+  if (state.ui && state.ui.sessionId === to) {
+    // 目标会话正处于前台：面板即时刷新（卡片 + 未读徽标）
+    broadcastPanelRefresh('session-inbox');
+  } else {
+    const focused = mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
+    if (!focused) {
+      try {
+        showNotification({ title: '\u8de8\u4f1a\u8bdd\u6d88\u606f', body: '\u6765\u81ea ' + (result.message.fromTitle || result.message.from) + '\uff1a' + String(text).slice(0, 80) });
+      } catch { /* 通知不可用 */ }
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.flashFrame(true);
+    }
+  }
+  return result;
+}
+
+/* ---------- 收尾 git 协议（P0-2，Claude Code 借鉴）：整轮完成自动提交 ---------- */
+
+/**
+ * 会话完成收尾：托管工作区里有未提交变更 → 自动提交快照（消息带 [dsh:会话id] 前缀），
+ * 提交后回报短 hash（日志 + 面板推送）。护栏：
+ *  - 只作用于"完成会话的项目 == 托管工作区"的仓库（git 写操作绑定托管区，防误提交其它项目）；
+ *  - 该会话必须是真完成（notify 已做整轮判定：assistant/message + step/end）；
+ *  - porcelain 无变更（除去 ## 分支行）时不提交。
+ */
+async function autoCommitRoundChanges(info) {
+  if (settings.get('autoCommitRounds') === false) return;
+  const ws = state.workspace;
+  const sid = info && info.sessionId;
+  if (!ws || !sid || !fs.existsSync(path.join(ws, '.git'))) return;
+  // 完成会话的项目目录（projcache 权威源）；缺失/非托管 → 跳过
+  let cwd = null;
+  try {
+    const file = path.join(state.dshHome, 'storages', 'session_projcache', 'sessions', sid + '.json');
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    cwd = doc && doc.record && doc.record.identity && doc.record.identity.cwd ? String(doc.record.identity.cwd) : null;
+  } catch { /* projcache 缺失 */ }
+  if (!cwd || cwd !== ws) {
+    logLine('[auto-commit] 会话 ' + String(sid).slice(0, 12) + ' 的项目不是托管工作区，跳过自动提交（' + (cwd || '未知') + '）');
+    return;
+  }
+  try {
+    const status = await gitStatus(ws);
+    if (!status.ok) return;
+    const lines = String(status.output || '').split('\n').map((l) => l.trim()).filter((l) => l && !/^##\s/.test(l));
+    if (!lines.length) return; // 工作区干净：无提交
+    const result = await gitCommit(ws, { message: '\u81ea\u52a8\u63d0\u4ea4\uff1a\u672c\u8f6e\u5de5\u4f5c\u5b8c\u6210', sessionId: sid });
+    if (result && result.ok) {
+      // git commit 输出形如 "[main abc1234] message"——提取 hash 回报
+      const m = /^\[[^\]]*\s([0-9a-f]{7,})/m.exec(String(result.output || ''));
+      logLine('[auto-commit] \u5df2\u81ea\u52a8\u63d0\u4ea4\uff08' + (m ? m[1] : 'hash \u672a\u77e5') + '）\uff1a' + String(result.output || '').split('\n')[0].slice(0, 120));
+      broadcastPanelRefresh('git');
+    } else {
+      logLine('[auto-commit] \u81ea\u52a8\u63d0\u4ea4\u5931\u8d25\uff1a' + ((result && result.error) || '\u672a\u77e5\u9519\u8bef'));
+    }
+  } catch (err) {
+    logLine('[auto-commit] \u5f02\u5e38\uff08\u5ffd\u7565\uff09\uff1a' + ((err && err.message) || String(err)));
+  }
+}
+
+/* ---------- 任务派发（状态门控 + 分类退避 + 崩溃续发） ---------- */
 
 /** 本进程已验证可用的端点风格（'new'=Typert 斜杠 / 'legacy'=点分）与参数名。 */
 const rpcStyleByMethod = new Map();
@@ -1122,17 +1226,43 @@ async function pasteTask(text, send) {
 
 /** 一次派发尝试：官方 RPC 优先（不依赖窗口/页面状态），失败回退剪贴板。 */
 async function sendTaskToHarness(task) {
+  let lastErr = null;
   if (task.send !== false && state.phase === 'ready' && state.url) {
     try {
       if (await rpcSendPrompt(task.text)) return true;
     } catch (err) {
+      lastErr = err;
       logLine('[task-dispatch] 官方 RPC 派发失败，回退剪贴板：' + (err && err.message ? err.message : err));
     }
   }
-  return pasteTask(task.text, task.send !== false);
+  try {
+    if (await pasteTask(task.text, task.send !== false)) return true;
+  } catch (err) {
+    lastErr = err;
+    logLine('[task-dispatch] 剪贴板派发失败：' + (err && err.message ? err.message : err));
+  }
+  // 两通道都失败：把原因抛给派发器做分类退避
+  // （auth/network 15s→60s→5m，quota 60s→5m→15m，其余 2s 快节奏重试）
+  if (lastErr) throw lastErr;
+  throw new Error('派发失败：RPC 与剪贴板均不可用（窗口/服务未就绪）');
 }
 
-/** 任务派发器：状态门控 + 内存队列（上限 20）+ 失败重试 3 次（间隔 2s）。 */
+/* ---- 任务派发持久化（P0-3：中断/重启不丢在途与排队任务，ready 后续发） ---- */
+const PENDING_TASK_FILE = () => path.join(app.getPath('userData'), 'task-pending.json');
+let pendingSaveTimer = null;
+function savePendingTasks() {
+  if (pendingSaveTimer) clearTimeout(pendingSaveTimer);
+  pendingSaveTimer = setTimeout(() => {
+    pendingSaveTimer = null;
+    try {
+      fs.writeFileSync(PENDING_TASK_FILE(), JSON.stringify(taskDispatcher.persistState()), 'utf8');
+    } catch (err) {
+      logLine('[task-dispatch] 持久化待发任务失败（忽略）：' + ((err && err.message) || String(err)));
+    }
+  }, 150); // 防抖：一次尝试内多次状态变化只写一次
+}
+
+/** 任务派发器：状态门控 + 内存队列（上限 20）+ 分类退避重试（P0-3）+ 崩溃续发。 */
 const taskDispatcher = new taskDispatch.TaskDispatcher({
   maxQueue: taskDispatch.DEFAULT_MAX_QUEUE,
   dropPolicy: 'drop-oldest',
@@ -1141,6 +1271,7 @@ const taskDispatcher = new taskDispatch.TaskDispatcher({
   isReady: () => state.phase === 'ready',
   sendTask: sendTaskToHarness,
   log: logLine,
+  onStateChanged: savePendingTasks,
   onDropped: (task) => logLine('[task-dispatch] \u961f\u5217\u5df2\u6ee1\uff0c\u4e22\u5f03\u6700\u65e7\u4efb\u52a1\uff1a' + String(task.text).slice(0, 80)),
   notifyFailure: (task, error) => {
     logLine('[task-dispatch] \u4efb\u52a1\u6d3e\u53d1\u5931\u8d25\uff1a' + String(task.text).slice(0, 120) + (error && error.message ? '（' + error.message + '）' : ''));
@@ -1150,6 +1281,12 @@ const taskDispatcher = new taskDispatch.TaskDispatcher({
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.flashFrame(true);
   },
 });
+// 崩溃续发：恢复上次未完成的任务（排队 + 在途重试），ready 后经 flush 自动补发
+try {
+  const raw = fs.readFileSync(PENDING_TASK_FILE(), 'utf8');
+  const saved = JSON.parse(raw);
+  taskDispatcher.restoreState(saved);
+} catch { /* 无历史 / 文件损坏：从空队列开始 */ }
 
 /* ---------- 定时任务 / 提醒 ---------- */
 
@@ -2699,6 +2836,25 @@ function startRpc() {
   });
   rpc.on('gitRemoteList', async () => gitRemoteList(state.workspace));
 
+  /* ---- 跨会话消息（P0-1）：MCP 工具经此投递/查询/标记（存储 session-inbox） ---- */
+
+  rpc.on('sessionMessageSend', (params) => deliverSessionMessage(params || {}));
+  rpc.on('sessionInboxStatus', async (params) => {
+    const sid = String((params && params.sessionId) || '').trim();
+    if (!sid) return { ok: false, error: '\u7f3a\u5c11 sessionId\uff08\u67e5\u8be2\u54ea\u4e2a\u4f1a\u8bdd\u7684\u6536\u4ef6\u7bb1\uff09' };
+    return sessionInbox.listMessages(inboxStoreRoot(), sid, {
+      includeRead: !!(params && params.includeRead),
+      limit: params && params.limit,
+    });
+  });
+  rpc.on('sessionInboxMarkRead', (params) => {
+    const sid = String((params && params.sessionId) || '').trim();
+    if (!sid) return { ok: false, error: '\u7f3a\u5c11 sessionId' };
+    const result = sessionInbox.markRead(inboxStoreRoot(), sid, params && params.ids);
+    if (result.ok && result.marked) broadcastPanelRefresh('session-inbox');
+    return result;
+  });
+
   return rpc.start();
 }
 
@@ -3168,6 +3324,71 @@ function registerDesktopFeatureIpc() {
     }
   });
 
+  // 建对话分支（P0-2）：git checkout -b dsh/<sid>。写操作只允许作用于托管工作区
+  // （面板展示可能跟随其它项目，避免误切他人仓库分支）；切换前检查其它会话的文件占用
+  // （并行会话同仓库协作时，切分支会影响对方工作树，先协调）。
+  ipcMain.handle('dsh:git-checkout', async (_event, payload) => {
+    if (!state.workspace) return { ok: false, error: '\u5c1a\u672a\u9009\u62e9\u5de5\u4f5c\u533a' };
+    try {
+      await syncUiContext();
+      if (effectiveWorkspace() !== state.workspace) {
+        return { ok: false, error: '\u5f53\u524d\u5c55\u793a\u7684\u9879\u76ee\u4e0d\u662f\u6258\u7ba1\u5de5\u4f5c\u533a\uff0c\u4e3a\u9632\u8bef\u64cd\u4f5c\u4ed6\u9879\u76ee git \u4e0d\u5141\u8bb8\u5207\u5206\u652f\uff08\u6258\u7ba1\uff1a' + state.workspace + '）' };
+      }
+      const branch = String((payload && payload.branch) || '').trim();
+      if (!branch) return { ok: false, error: 'branch \u5fc5\u586b' };
+      const claims = workspaceGuard.claimsStatus(state.workspace, {});
+      const others = (claims && claims.others) || [];
+      if (others.length) {
+        return { ok: false, error: '\u5176\u4ed6\u5bf9\u8bdd\u6b63\u5728\u7f16\u8f91\u6587\u4ef6\uff08' + others.map((c) => c.file.split(/[\\/]/).pop()).join('\u3001') + '\uff09\uff0c\u5207\u5206\u652f\u4f1a\u5f71\u54cd\u5176\u5de5\u4f5c\u6811\uff0c\u8bf7\u5148\u534f\u8c03/\u7b49\u5f85\u91ca\u653e\u540e\u518d\u5c1d\u8bd5' };
+      }
+      const result = await gitCheckout(state.workspace, { branch, create: !!(payload && payload.create) });
+      if (result && result.ok) broadcastPanelRefresh('git');
+      return result;
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    }
+  });
+
+  // 跨会话消息（P0-1）：EnvPanel 轮询未读数 + 展开标记已读；dispatch 供卡片"让本会话处理"
+  ipcMain.handle('dsh:session-inbox-status', async (_event, payload) => {
+    const sid = String((payload && payload.sessionId) || '').trim();
+    if (!sid) return { ok: false, error: '\u7f3a\u5c11 sessionId' };
+    try {
+      return sessionInbox.listMessages(inboxStoreRoot(), sid, {
+        includeRead: !!(payload && payload.includeRead),
+        limit: (payload && payload.limit) || 20,
+      });
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    }
+  });
+  ipcMain.handle('dsh:session-inbox-mark-read', async (_event, payload) => {
+    const sid = String((payload && payload.sessionId) || '').trim();
+    if (!sid) return { ok: false, error: '\u7f3a\u5c11 sessionId' };
+    try {
+      const result = sessionInbox.markRead(inboxStoreRoot(), sid, payload && payload.ids);
+      if (result.ok && result.marked) broadcastPanelRefresh('session-inbox');
+      return result;
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    }
+  });
+  ipcMain.handle('dsh:session-message-send', async (_event, payload) => {
+    try {
+      const result = deliverSessionMessage(payload || {});
+      if (result.ok) broadcastPanelRefresh('session-inbox');
+      return result;
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    }
+  });
+  ipcMain.handle('dsh:dispatch-to-harness', async (_event, payload) => {
+    const text = String((payload && payload.text) || '').trim();
+    if (!text) return { ok: false, error: 'text \u5fc5\u586b' };
+    dispatchTaskToHarness(text);
+    return { ok: true };
+  });
+
   ipcMain.handle('dsh:usage-get', async () => {
     try {
       const result = await getUsageSnapshot();
@@ -3265,6 +3486,15 @@ function registerDesktopFeatureIpc() {
     state.notifyOnComplete = payload.enabled !== false;
     broadcastState();
     return { ok: true, notifyOnComplete: state.notifyOnComplete };
+  });
+
+  // P0-2 收尾 git 协议开关：整轮完成且托管工作区有变更时自动提交（无需重启，watcher 常开判读此值）
+  ipcMain.handle('dsh:auto-commit-set', (_event, payload) => {
+    const enabled = payload && payload.enabled !== false;
+    settings.set('autoCommitRounds', enabled);
+    state.autoCommitRounds = enabled;
+    broadcastState();
+    return { ok: true, autoCommitRounds: state.autoCommitRounds };
   });
 
   /* ---- 通知免打扰（深夜不弹通知，保留 flashFrame 与日志） ---- */
@@ -5535,12 +5765,15 @@ async function main() {
     logLine('[norms] 写入自动规范失败（忽略）：' + ((err && err.message) || String(err)));
   }
 
-  // 任务完成通知（Claude 风格）：监听会话日志写入突发结束。
-  if (state.notifyOnComplete) {
+  // 任务完成通知（Claude 风格）+ 收尾自动提交（P0-2）：监听会话日志写入突发结束。
+  // 两功能共用完成 watcher，各自独立开关（关闭通知仍可保留自动提交，反之亦然）。
+  if (state.notifyOnComplete || settings.get('autoCommitRounds') !== false) {
     completionWatcher = startCompletionWatcher({
       sessionsDir: path.join(state.dshHome, 'sessions'),
       log: logLine,
-      onComplete: () => {
+      onComplete: (info) => {
+        // 收尾 git 协议：整轮真完成 → 托管工作区有变更则自动提交快照（回报 hash 到日志/面板）
+        autoCommitRoundChanges(info || {});
         if (!state.notifyOnComplete) return;
         const focused = mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
         if (!focused) {

@@ -341,6 +341,9 @@ window.__ModuleLoader__.load({
           row("任务完成通知", statusChip(notifyOn, "已开启", "已关闭", () => {
             try { api().setNotifyOnComplete(!notifyOn); setState({ ...state, notifyOnComplete: !notifyOn }); } catch (err) {}
           })),
+          row("每轮完成自动提交", statusChip(state ? state.autoCommitRounds !== false : true, "已开启", "已关闭", () => {
+            try { api().setAutoCommitRounds(!(state ? state.autoCommitRounds !== false : true)); setState({ ...state, autoCommitRounds: !(state ? state.autoCommitRounds !== false : true) }); } catch (err) {}
+          })),
           row("开机自启", statusChip(autoStart, "已开启", "已关闭", () => {
             try { api().setAutoStart(!autoStart); setState({ ...state, autoStart: !autoStart }); } catch (err) {}
           })),
@@ -2153,6 +2156,8 @@ window.__ModuleLoader__.load({
       dsh_desktop_computer_launch: '启动应用', dsh_desktop_open_folder: '打开目录', dsh_desktop_open_logs: '打开日志',
       dsh_desktop_open_terminal: '终端模式', dsh_desktop_apply_update: '应用更新', dsh_desktop_check_updates: '检查更新',
       dsh_desktop_system_doctor: '系统体检', dsh_desktop_switch_workspace: '切换工作区',
+      dsh_desktop_send_session_message: '跨会话消息', dsh_desktop_session_inbox_status: '收件箱查询',
+      dsh_desktop_session_inbox_mark_read: '收件箱已读',
     };
     const toolLabel = (name) => {
       if (TOOL_LABELS[name]) return TOOL_LABELS[name];
@@ -2181,6 +2186,12 @@ window.__ModuleLoader__.load({
       const [map, setMap] = react.useState(null);      // 项目代码地图状态
       const [claims, setClaims] = react.useState(null); // 多会话编辑占用
       const [github, setGithub] = react.useState(null); // GitHub 集成状态
+      const [inbox, setInbox] = react.useState(null);   // 跨会话消息收件箱（items=未读列表, unread=条数）
+      const [inboxOpen, setInboxOpen] = react.useState(false); // 展开态：展开才显示消息全文（入上下文前先见通知）
+      const [inboxItems, setInboxItems] = react.useState([]);  // 展开时点的消息快照（收起后轮询不清）
+      const [inboxNote, setInboxNote] = react.useState('');    // 操作提示（已读/已派发/复制失败）
+      const [gitBusy, setGitBusy] = react.useState(false);     // 建对话分支进行中
+      const [gitNote, setGitNote] = react.useState('');        // 建分支结果/错误提示
       const visionItems = useVisionStream();
 
       // 订阅本地视觉识别流：识别开始自动展开侧边栏（调用本地视觉模型即打开），
@@ -2248,10 +2259,12 @@ window.__ModuleLoader__.load({
             });
           }
         }
-        let usageTick = 0;
-        // 会话切换（effect 因 currentSessionId 重建）先清旧活动，避免闪现上一对话内容
+        let usageTick = 11; // 从 11 起步：切会话/打开面板的首轮 refresh 即触发一次 usage 扫描（12%12==0），之后维持 60s 低频
+        // 会话切换（effect 因 currentSessionId 重建）先清旧状态，避免闪现上一对话内容
         setAct(null);
-        // cheapOnly：只刷 Git/项目地图/编辑占用（推送路径；跳过重的 usage/activity 扫描）
+        setInbox(null); setInboxOpen(false); setInboxItems([]); setInboxNote('');
+        setGitBusy(false); setGitNote('');
+        // cheapOnly：只刷 Git/项目地图/编辑占用/收件箱（推送路径；跳过重的 usage/activity 扫描）
         const refresh = (cheapOnly) => {
           if (!d) return;
           usageTick++;
@@ -2280,6 +2293,10 @@ window.__ModuleLoader__.load({
           // 项目代码地图 + 编辑占用（轻量查询，与 git 同频高频刷新 + 事件推送）
           if (d.projectMapStatus) d.projectMapStatus().then((r) => { if (!disposed && r && r.ok) setMap(r); }).catch(() => {});
           if (d.editStatus) d.editStatus().then((r) => { if (!disposed && r && r.ok) setClaims(r); }).catch(() => {});
+          // 跨会话消息未读（轻量：只读收件箱小文件；推送路径也刷，收到消息即出现卡片）
+          if (d.sessionInboxStatus && currentSessionId) d.sessionInboxStatus({ sessionId: currentSessionId }).then((r) => {
+            if (!disposed && r && r.ok) setInbox(r);
+          }).catch(() => {});
           if (cheapOnly) return;
           // usage 扫描较重（子进程化但仍消耗 IO）：每 12 轮（60s）一次，避免频繁唤醒
           if (usageTick % 12 === 0 && d.getUsage) d.getUsage().then((r) => { if (!disposed && r && r.ok) setUsage(r.summary || r); }).catch(() => {});
@@ -2311,6 +2328,13 @@ window.__ModuleLoader__.load({
       const sessionTitle = (sessionUsage && sessionUsage.title) || null;
       const sessionTokens = sessionUsage && sessionUsage.usage
         ? ((sessionUsage.usage.inputTokens || 0) + (sessionUsage.usage.cacheReadTokens || 0) + (sessionUsage.usage.outputTokens || 0))
+        : null;
+      // 当前上下文 = 最后一次请求的输入（缓存命中 + 未命中）；最近一次输出单独标注
+      const sessionCtxTokens = sessionUsage && sessionUsage.lastUsage
+        ? ((sessionUsage.lastUsage.inputTokens || 0) + (sessionUsage.lastUsage.cacheReadTokens || 0))
+        : null;
+      const sessionOutTokens = sessionUsage && sessionUsage.lastUsage
+        ? ((sessionUsage.lastUsage.outputTokens || 0) + (sessionUsage.lastUsage.reasoningTokens || 0))
         : null;
       const tierNow = tierOf(Date.now());
 
@@ -2357,6 +2381,84 @@ window.__ModuleLoader__.load({
         actRows.push(h('p', { key: 'aerr', style: { ...st.hint, padding: '2px' } }, '读取活动失败：' + String(act.error || '未知错误')));
       }
 
+      // 跨会话消息卡片（P0-1）：折叠只显示来源与条数（消息未入上下文前先见通知）；
+      // 展开才显示消息全文并自动标记已读；「让本会话处理」把消息派发给当前 harness 回合。
+      const renderInbox = () => {
+        const d = api();
+        const count = (inbox && inbox.unread) || 0;
+        const items = inboxOpen ? inboxItems : ((inbox && inbox.items) || []);
+        const first = items.length ? items[0] : null;
+        const senderOf = (m) => (m && (m.fromTitle || String(m.from).slice(0, 12))) || '?';
+        const whenOf = (t) => { try { return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
+        const doCopy = (m) => {
+          try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(m.text).then(() => setInboxNote('已复制到剪贴板'), () => setInboxNote('复制失败（请手动选择文本）'));
+            } else setInboxNote('复制失败（浏览器不支持剪贴板）');
+          } catch { setInboxNote('复制失败'); }
+        };
+        const doDispatch = (m) => {
+          if (!d || !d.dispatchToHarness) { setInboxNote('派发通道不可用'); return; }
+          d.dispatchToHarness(m.text).then((r) => setInboxNote(r && r.ok ? '已交给本会话处理' : ('派发失败：' + ((r && r.error) || '未知')))).catch(() => setInboxNote('派发失败'));
+        };
+        const toggle = () => {
+          if (inboxOpen) { setInboxOpen(false); return; }
+          const snapshot = (inbox && inbox.items) || [];
+          setInboxItems(snapshot);
+          setInboxOpen(true);
+          setInboxNote('');
+          if (snapshot.length && d && d.sessionInboxMarkRead) {
+            d.sessionInboxMarkRead({ sessionId: currentSessionId })
+              .then(() => setInbox((prev) => (prev ? { ...prev, unread: 0, items: [] } : prev)))
+              .catch(() => {});
+          }
+        };
+        const hintStyle = { ...st.hint, padding: '0 2px' };
+        return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+          h('div', {
+            style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', cursor: 'pointer', padding: '2px', borderRadius: '6px' },
+            title: '跨会话消息（点此展开/收起；展开才显示内容并标记已读）',
+            onClick: toggle,
+          },
+            h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '6px', color: 'var(--dsw-alias-label-primary)', fontSize: '12px', fontWeight: '600' } },
+              '\u2709',
+              h('span', {}, '跨会话消息'),
+              count ? h('span', { style: { color: 'var(--dsw-alias-state-business-primary, #d29922)', fontSize: '11px', fontWeight: '700' } }, count + ' \u6761\u672a\u8bfb') : null),
+            h('span', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px' } }, inboxOpen ? '\u25be' : '\u25b8')),
+          !inboxOpen
+            ? (count === 0
+              ? h('p', { key: 'ibx0', style: hintStyle }, inboxNote || (inbox === null ? '（检查中…）' : '（无未读消息）'))
+              : h('div', { key: 'ibx1', style: { display: 'flex', flexDirection: 'column', gap: '2px', padding: '2px' } },
+                h('span', { style: actSub }, '来自 ' + senderOf(first)),
+                h('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', lineHeight: '1.5', overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } }, String(first.text))))
+            : h('div', { key: 'ibx2', style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
+              inboxItems.length === 0
+                ? h('p', { style: hintStyle }, inboxNote || '（没有未读消息了）')
+                : inboxItems.map((m) => h('div', { key: 'ibxm' + m.id, style: { display: 'flex', flexDirection: 'column', gap: '3px', borderTop: '1px solid var(--dsw-alias-border-l1)', paddingTop: '5px' } },
+                  h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px' } },
+                    h('span', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px', fontWeight: '600' } }, '来自 ' + senderOf(m)),
+                    h('span', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '10px', marginLeft: 'auto' } }, whenOf(m.time))),
+                  h('div', { style: { color: 'var(--dsw-alias-label-primary)', fontSize: '11px', lineHeight: '1.55', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '150px', overflowY: 'auto' } }, m.text),
+                  h('div', { style: { display: 'flex', gap: '6px', justifyContent: 'flex-end' } },
+                    btn('复制', () => doCopy(m), { small: true }),
+                    btn('让本会话处理', () => doDispatch(m), { small: true, primary: true })))),
+              inboxNote ? h('p', { style: hintStyle }, inboxNote) : null));
+      };
+
+      // 建对话分支（P0-2 收尾协议 ③）：git checkout -b dsh/<会话短 id>（切换前主进程检查
+      // 其它会话占用与托管区边界；未提交变更由 git-runner 自动 stash，可 git stash pop 恢复）
+      const branchShort = currentSessionId ? String(currentSessionId).slice(0, 12) : null;
+      const makeBranch = () => {
+        if (!branchShort) return;
+        const d = api();
+        if (!d || !d.gitCheckout) { setGitNote('建分支通道不可用'); return; }
+        setGitBusy(true); setGitNote('');
+        d.gitCheckout({ branch: 'dsh/' + branchShort, create: true }).then((r) => {
+          setGitBusy(false);
+          setGitNote(r && r.ok ? '已创建并切换到分支 dsh/' + branchShort + '（面板随切换刷新）' : ('失败：' + ((r && r.error) || '未知错误')));
+        }).catch(() => { setGitBusy(false); setGitNote('操作失败'); });
+      };
+
       return h('div', { style: panelBody, 'data-dsh-desktop-env-panel': 'true' },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '2px 0 0' } },
           h('span', { style: { color: 'var(--dsw-alias-label-primary)', fontSize: '13px', fontWeight: '600', lineHeight: '20px' } }, '环境信息')),
@@ -2367,10 +2469,26 @@ window.__ModuleLoader__.load({
             visionItems.map((it) => h(VisionStreamCard, { key: it.id, item: it })))
           : null,
 
+        // 跨会话消息卡片（来自其它对话的通知；折叠/展开 + 已读 + 交给本会话处理）
+        renderInbox(),
+
         h('div', { style: envGroupTitle }, currentSessionId ? '本会话活动' : '最近活动（未取得会话）'),
         act === null
           ? h('p', { key: 'aload', style: { ...st.hint, padding: '2px' } }, '读取中…')
           : h('div', { key: 'a', style: { display: 'flex', flexDirection: 'column', gap: '4px' } }, actRows),
+
+        // 本会话用量（归因到当前会话；数据来自 usage.sessions 按 sessionId 过滤，未取到显示 '—'）
+        h('div', { style: envGroupTitle }, '本会话用量'),
+        h('div', { style: { display: 'flex', flexDirection: 'column' } },
+          !currentSessionId
+            ? h('p', { key: 'u0', style: { ...st.hint, padding: '2px' } }, '（未取得会话）')
+            : usage === null
+              ? h('p', { key: 'u0', style: { ...st.hint, padding: '2px' } }, '读取中…')
+              : [
+                envRow('累计 tokens', sessionTokens !== null ? fmtNum(sessionTokens) : '—', 'tok'),
+                envRow('当前上下文', sessionCtxTokens !== null ? fmtNum(sessionCtxTokens) : '—', 'ctx'),
+                envRow('最近一轮输出', sessionOutTokens !== null ? fmtNum(sessionOutTokens) : '—', 'out'),
+              ]),
 
         h('div', { style: envGroupTitle }, '环境'),
         h('div', { style: { display: 'flex', flexDirection: 'column' } },
@@ -2395,7 +2513,16 @@ window.__ModuleLoader__.load({
                 : h('div', { key: 'g', style: { display: 'flex', flexDirection: 'column' } },
                   envRow('分支', gitInfo.branch, 'br'),
                   envRow('领先/落后', gitInfo.ahead + ' / ' + gitInfo.behind, 'ab'),
-                  envRow('未提交变更', gitInfo.changed + ' 个文件', 'ch'))),
+                  envRow('未提交变更', gitInfo.changed + ' 个文件', 'ch'),
+                  h('div', { key: 'gb', style: { display: 'flex', flexDirection: 'column', gap: '2px', paddingTop: '4px' } },
+                    h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' } },
+                      h('span', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '10px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, '本会话隔离'),
+                      btn(gitBusy ? '创建中…' : ('建分支 dsh/' + (branchShort || '?')), makeBranch, {
+                        small: true,
+                        disabled: gitBusy || !branchShort || !gitInfo,
+                        title: '以当前分支为基线新建独立分支 dsh/<会话短 id>，本会话的改动与主干/其它对话隔离（切换前若提示占用需先协调；未提交变更会自动 stash 保存，可 git stash pop 恢复）',
+                      })),
+                    gitNote ? h('p', { key: 'gn', style: { ...st.hint, padding: '0 2px', color: /失败/.test(gitNote) ? 'var(--dsw-alias-state-danger-primary, #f85149)' : undefined } }, gitNote) : null))),
 
         h('div', { style: envGroupTitle }, '项目地图'),
         h('div', { style: { display: 'flex', flexDirection: 'column' } },

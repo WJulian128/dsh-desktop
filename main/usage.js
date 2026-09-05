@@ -148,7 +148,16 @@ function scanWorkspaceUsage({ dshHome, workspace, usagePrices }) {
       try {
         const scanned = scanSessionFile(file);
         for (const key of Object.keys(total)) total[key] += scanned.usage[key];
-        sessions.push({ sessionId: entry.name, title: scanned.title, createdAt: scanned.createdAt, lastTime: scanned.lastTime, usage: scanned.usage });
+        // lastUsage = 该会话最后一次请求的 usage（当前上下文尺寸：inputTokens+cacheReadTokens
+        // 为上下文内容、outputTokens/reasoningTokens 为最近一次输出）——供面板“用量归因”展示
+        sessions.push({
+          sessionId: entry.name,
+          title: scanned.title,
+          createdAt: scanned.createdAt,
+          lastTime: scanned.lastTime,
+          usage: scanned.usage,
+          lastUsage: scanned.lastUsage || null,
+        });
       } catch (err) {
         sessions.push({ sessionId: entry.name, error: (err && err.message) || String(err), usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 } });
       }

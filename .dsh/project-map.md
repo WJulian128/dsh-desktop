@@ -71,15 +71,17 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - main/git-runner.js：runGit + gitSummary + 白名单安全操作（含 push/pull --ff-only/merge/remote）
 - main/subagent-stream.js：子代理推理流读取（输出 parentSession）
 - main/panel-stream-worker.js：面板流 worker（list/since/contains）
+- main/task-dispatch.js：任务派发纯逻辑——队列/门控/**失败分类退避（auth/network 15s→60s→5m、quota 60s→5m→15m、generic 2s）+ persistState/restoreState 崩溃续发（P0-3，onStateChanged 落盘 userData/task-pending.json）**
+- main/session-inbox.js：跨会话消息收件箱（P0-1）：userData/session-inbox/<toSessionId>.jsonl 纯 Node 文件存储（appendMessage/listMessages/markRead；单箱 200 条上限；会话 id 白名单防路径穿越）
 - main/transcript-check.js：会话 transcript 内容检查（尾帧快检/全量）
 - main/vision.js：视觉识别（describeImage/preprocessImage 长边 1280 降采样）+ readCurrentModel（尾帧快检优先）
 - main/ui-introspect.js：UI 内省注入脚本（snapshotScript/clickScript/textScript/normalizeSnapshot）
-- main/notify.js：任务完成通知——classifyLastRecord 要求 assistant/message 后跟 step/end|turn/end 才 round-done；CONVERSATION_TYPES 含 tool-call-chunks；startCompletionWatcher 静默 idleMs 判定 + scan worker 异步尾部扫描
+- main/notify.js：任务完成通知——classifyLastRecord 要求 assistant/message 后跟 step/end|turn/end 才 round-done；CONVERSATION_TYPES 含 tool-call-chunks；startCompletionWatcher 静默 idleMs 判定 + scan worker 异步尾部扫描；**onComplete(info={sessionId,file}) 携带完成会话（P0-2 自动提交判定用；无参调用仍兼容）**
 - main/bot-gateway/qq-gateway.js：QQ 官方机器人网关——getAccessToken（7200s 缓存）、getGatewayUrl、WebSocket 状态机（Hello→Identify→READY/心跳/RESUME 重连退避）、事件归一化（C2C/群AT/频道，去 <@!id> 提及）、sendText 三类目标；注入式 httpTransport/wsFactory 可测
 - main/bot-gateway/wechat-push.js：企微 webhook markdown 推送（errcode 45009 限流不重试、其他错误重试一次、truncateUtf8Bytes 4096 字节逐字符截断）
 - main/bot-gateway/reply-bridge.js：ReplyBridge（注入→轮询会话文件→extractReplyAfter 等 step/end 提取回复，串行队列防错位）+ findSessionFile
 - main/mcp-server.mjs：全部 dsh_desktop_* 工具（github_*、ui_*、wechat_push、bot_status、更新三件套、office/docx/xlsx/word 八件套等；每工具先 call('method') 走 desktop-rpc）
-- main/main.js：startRpc()（ui*/github*/git*/地图/占用/wechatPush/botStatus/office/docx/xlsx/word 分发）；registerDesktopFeatureIpc()（含 bot-config/set/test 系列）；auto-resume 接续；computerScreenshot target:self；**截图链路**：dsh:screenshot（captureFlowToken 防闪回）→ capture-region → screenshot-ready；screenshot-rescue 并行识别 + rescue-progress；**机器人桥接线**：applyBotConfig/readBotConfig、handleQqMessage（占位→注入→分段回推）、pushLatestReplyToWechat（notify onComplete 触发）；**升级防护接线**：applyUpdate（后台流水线：installOnce/bootAndSmoke/自动回滚熔断 + presentUpdateOutcome 结果出口）、checkUpdateGuard（applied 等冒烟）、postBootSmoke/promptRollback/afterBootFailure、startHarness 前 runBootPreflight；**官方项目跟随**：syncUiContext（projcache 轮询+子代理排除）→ state.ui → effectiveWorkspace 供面板只读源（git/地图/占用/活动/用量）
+- main/main.js：startRpc()（ui*/github*/git*/地图/占用/wechatPush/botStatus/office/docx/xlsx/word/**sessionMessageSend/sessionInboxStatus/sessionInboxMarkRead（P0-1）**分发）；registerDesktopFeatureIpc()（含 bot-config/set/test 系列、**dsh:git-checkout（托管区+占用护栏，P0-2）、dsh:auto-commit-set、session-inbox 系列、dispatch-to-harness**）；auto-resume 接续；**autoCommitRoundChanges（P0-2 收尾 git：projcache cwd==托管区才提交）**；computerScreenshot target:self；**截图链路**：dsh:screenshot（captureFlowToken 防闪回）→ capture-region → screenshot-ready；screenshot-rescue 并行识别 + rescue-progress；**机器人桥接线**：applyBotConfig/readBotConfig、handleQqMessage（占位→注入→分段回推）、pushLatestReplyToWechat（notify onComplete 触发）；**升级防护接线**：applyUpdate（后台流水线：installOnce/bootAndSmoke/自动回滚熔断 + presentUpdateOutcome 结果出口）、checkUpdateGuard（applied 等冒烟）、postBootSmoke/promptRollback/afterBootFailure、startHarness 前 runBootPreflight；**官方项目跟随**：syncUiContext（projcache 轮询+子代理排除）→ state.ui → effectiveWorkspace 供面板只读源（git/地图/占用/活动/用量）
 - main/harness.js：HarnessController（行缓冲解析子进程输出、捕获 'dsh web: ' token URL、recentLog 环形缓冲供失败诊断、webUrl 最多等 8s）+ pickFreePort/waitForHttp
 - main/harness-rpc.js：buildRequest/classifyResponse/argsKeyFor/splitMethod（双风格端点信封 + 响应错误分类，纯函数）
 - main/upgrade-guard.js：guardForUpdate/markApplied/shouldSmoke/triageUpgradeBootFailure/classifyBootFailure + KEYS（updateGuard/lastKnownGoodVersion）
@@ -96,10 +98,12 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - scripts/test-office-com.js：COM 通道单测（6 项，注入式）
 - scripts/check-harness-contract.js：官方契约体检（升级前后必跑：dsh/bin/插件目标/profiles 链接/本地依赖/i18n 截图文案/web.patch 行/会话帧可解压；退出码 0/2/1）
 - UPGRADE-PLAYBOOK.md：升级处置手册（checklist/故障树/契约清单/官方变更杂记）
-- packages/settings-update/client.js：parseGitSummary（/^#\s/ 小节头）；EnvPanel 五组（含「项目」行=官方当前会话 cwd、「会话」行=标题/短 id）；SchedPanel；GithubSection；**BotSection（机器人分区）**：QQ 凭据+状态实时+测试+注册指引折叠、企微 webhook+推送策略+测试；**截图补救**：ScreenshotButton + MutationObserver 精确文案 + 800ms shadow 轮询 + onRescueProgress 占位更新
+- packages/settings-update/client.js：parseGitSummary（/^#\s/ 小节头）；EnvPanel（「本会话活动/用量/环境/Git/项目地图/编辑占用/GitHub」+**顶部「跨会话消息」折叠卡（P0-1：未读徽标/展开已读/复制/让本会话处理）+ Git 区「建分支 dsh/<sid>」按钮（P0-2）**；「本会话用量」行=累计+当前上下文+最近一轮输出（P0-4））；SchedPanel；GithubSection；**BotSection（机器人分区）**：QQ 凭据+状态实时+测试+注册指引折叠、企微 webhook+推送策略+测试；**截图补救**：ScreenshotButton + MutationObserver 精确文案 + 800ms shadow 轮询 + onRescueProgress 占位更新
 - packages/llm-openai-compat/scripts/smoke.mjs：厂商 adapter 冒烟（provider 列表/余额/直连格式探测；0.1.2 适配时同步更新）
 - renderer/capture.html：截图选区页（冻结背景 + 蓝色选区 + cdebug 全链路日志）
 - renderer/git-diff.html：Git 变更窗（提交/回滚/分支 + 占用警告）
+- scripts/test-task-dispatch.js：task-dispatch 单测（54 项：队列/门控/分类退避/持久化恢复/在途续发）
+- scripts/test-session-inbox.js：session-inbox 单测（20 项：投递/列表/已读/修剪/安全校验）
 - scripts/test-notify.js：notify 判定单测（22 项，含工具前段落拒绝判定）
 - scripts/test-qq-gateway.js：QQ 网关协议单测（19 项：token/网关地址/Identify/READY/事件归一化/RESUME/sendText/stop 清理）
 - scripts/test-wechat-push.js：企微 webhook 推送单测（10 项：errcode/重试/截断/URL 校验）

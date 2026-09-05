@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   testVision: () => ipcRenderer.invoke('dsh:vision-test'),
   setPermissionMode: (mode) => ipcRenderer.invoke('dsh:permission-mode', { mode }),
   setNotifyOnComplete: (enabled) => ipcRenderer.invoke('dsh:notify-set', { enabled }),
+  setAutoCommitRounds: (enabled) => ipcRenderer.invoke('dsh:auto-commit-set', { enabled }),
   setQuietHours: (payload) => ipcRenderer.invoke('dsh:quiet-hours-set', payload),
   openAgentsFile: (scope) => ipcRenderer.invoke('dsh:agents-file', { scope }),
   gitSummary: () => ipcRenderer.invoke('dsh:git-summary'),
@@ -60,6 +61,14 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   gitCommit: (message) => ipcRenderer.invoke('dsh:git-commit', { message }),
   gitRestore: () => ipcRenderer.invoke('dsh:git-restore'),
   gitBranch: () => ipcRenderer.invoke('dsh:git-branch'),
+  // Git 分支切换/新建（EnvPanel「建对话分支」按钮）
+  gitCheckout: (payload) => ipcRenderer.invoke('dsh:git-checkout', payload),
+
+  // 跨会话消息（P0-1）：查未读 / 标记已读 / 投递 / 交给本会话处理
+  sessionInboxStatus: (payload) => ipcRenderer.invoke('dsh:session-inbox-status', payload),
+  sessionInboxMarkRead: (payload) => ipcRenderer.invoke('dsh:session-inbox-mark-read', payload),
+  sessionMessageSend: (payload) => ipcRenderer.invoke('dsh:session-message-send', payload),
+  dispatchToHarness: (text) => ipcRenderer.invoke('dsh:dispatch-to-harness', { text }),
 
   // GitHub 集成（设置页 + 环境信息面板）
   githubStatus: () => ipcRenderer.invoke('dsh:github-status'),

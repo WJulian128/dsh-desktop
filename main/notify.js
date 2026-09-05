@@ -237,12 +237,19 @@ function runScanTask(task, payload, fallback, log = () => {}) {
   });
 }
 
-/** 经 worker 异步判定"整轮完成"（回调形式，跳过子代理会话）；worker 不可用时同步回退。 */
+/** 经 worker 异步判定"整轮完成"（回调形式，跳过子代理会话）；worker 不可用时同步回退。
+ *  cb(done, info)：info = { file, sessionId }（无活动会话时为 null）——供调用方做
+ *  "本会话收尾动作"（如 P0-2 自动提交：判定会话归属后按项目 git 提交）。 */
 function scanRoundDoneAsync(sessionsDir, log, cb) {
   const active = findNewestSessionFile(sessionsDir, { skipSubagent: true });
-  if (!active) { cb(null); return; }
+  if (!active) { cb(null, null); return; }
   runScanTask('is-round-done', { file: active.file }, () => ({ done: scanRoundDoneFile(active.file) }), log)
-    .then((res) => cb(res && typeof res.done === 'boolean' ? res.done : null));
+    .then((res) => {
+      const done = res && typeof res.done === 'boolean' ? res.done : null;
+      let info = null;
+      try { info = { file: active.file, sessionId: path.basename(path.dirname(active.file)) }; } catch { /* 路径解析失败则不带 info */ }
+      cb(done, info);
+    });
 }
 
 function startCompletionWatcher({ sessionsDir, onComplete, idleMs = 5000, log = () => {} }) {
@@ -269,10 +276,10 @@ function startCompletionWatcher({ sessionsDir, onComplete, idleMs = 5000, log = 
         log('[notify] 上一次尾部扫描尚未结束，跳过本次完成判定');
       } else {
         scanning = true;
-        scanRoundDoneAsync(sessionsDir, log, (done) => {
+        scanRoundDoneAsync(sessionsDir, log, (done, info) => {
           scanning = false;
           if (done === null || done) {
-            try { onComplete(); } catch (err) { log('[notify] onComplete 失败：' + (err && err.message ? err.message : err)); }
+            try { onComplete(info || {}); } catch (err) { log('[notify] onComplete 失败：' + (err && err.message ? err.message : err)); }
           } else {
             log('[notify] 回合仍在进行（尾部非最终答复），跳过本次完成通知');
           }

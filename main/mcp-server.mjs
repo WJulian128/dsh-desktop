@@ -986,6 +986,85 @@ server.registerTool(
   },
 );
 
+// ---- 跨会话消息（P0-1）：给另一个对话发消息 / 查看自己的未读（收件箱独立于官方会话文件） ----
+
+server.registerTool(
+  "dsh_desktop_send_session_message",
+  {
+    title: "跨会话发消息",
+    description:
+      "给另一个对话（会话）发一条跨会话消息：目标会话的右侧面板顶部会出现“来自本会话 X”折叠卡片，" +
+      "展开后可见消息并可交给该会话处理（可配合 dsh_desktop_session_inbox_status 查询对方是否已读）。" +
+      "典型用法：本会话完成了对方请求的某件事、或需要把结论/任务转交另一个对话时。" +
+      "fromSessionId 缺省为当前激活会话（主进程自动判定）；给会话 id 相同（自己）发消息会被拒绝。" +
+      "toSessionId 可从 EnvPanel「会话」行或会话列表/交接文件中获取（形如 session-xxxxxxxx-…）。",
+    inputSchema: z.object({
+      toSessionId: z.string().describe("目标会话 id（形如 session-xxxxxxxx-…）"),
+      text: z.string().max(4000).describe("消息内容（≤4000 字符；对方展开卡片才能看到，不影响官方对话历史）"),
+      fromSessionId: z.string().optional().describe("来源会话 id（缺省自动取当前激活会话）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("sessionMessageSend", {
+      toSessionId: args.toSessionId,
+      text: args.text,
+      fromSessionId: args.fromSessionId,
+    });
+    if (!result.ok) throw new Error(result.error || "发送失败");
+    const sender = result.message && (result.message.fromTitle || result.message.from);
+    return text("已投递到会话 " + args.toSessionId + " 的收件箱（" +
+      (sender ? "来自 " + sender + "；" : "") +
+      "对方面板顶部会出现折叠卡片，展开才可见消息内容）。");
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_session_inbox_status",
+  {
+    title: "查询跨会话消息",
+    description:
+      "查询指定会话的跨会话消息收件箱：默认只返回未读消息（新→旧），includeRead=true 时含最近已读。" +
+      "用它检查别的对话是否给自己发来了消息/交接；EnvPanel 顶部卡片显示的就是这里的数据。",
+    inputSchema: z.object({
+      sessionId: z.string().describe("要查询的会话 id"),
+      includeRead: z.boolean().optional().describe("是否包含已读（缺省只查未读）"),
+      limit: z.number().optional().describe("返回条数（缺省 20）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("sessionInboxStatus", {
+      sessionId: args.sessionId,
+      includeRead: args.includeRead,
+      limit: args.limit,
+    });
+    if (!result.ok) throw new Error(result.error || "查询失败");
+    const lines = ["会话 " + args.sessionId + " 收件箱：未读 " + result.unread + " 条。"];
+    if (!result.items.length) lines.push("（无" + (args.includeRead ? "消息" : "未读消息") + "）");
+    for (const m of result.items) {
+      const when = new Date(m.time).toLocaleString();
+      lines.push("- [" + (m.read ? "已读" : "未读") + "] " + when + " 来自 " + (m.fromTitle || m.from) + "：" + m.text);
+    }
+    return text(lines.join("\n"), { maxChars: 8000 });
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_session_inbox_mark_read",
+  {
+    title: "标记跨会话消息已读",
+    description: "把指定会话收件箱的消息标记为已读：ids 缺省标记全部；也可只标记指定消息 id（从 inbox_status 的返回中取）。",
+    inputSchema: z.object({
+      sessionId: z.string().describe("会话 id"),
+      ids: z.array(z.string()).optional().describe("只标记这些消息 id（缺省全部）"),
+    }),
+  },
+  async (args) => {
+    const result = await call("sessionInboxMarkRead", { sessionId: args.sessionId, ids: args.ids });
+    if (!result.ok) throw new Error(result.error || "标记失败");
+    return text(result.marked ? "已标记 " + result.marked + " 条为已读。" : "（没有需要标记的消息）");
+  },
+);
+
 server.registerTool(
   "dsh_desktop_git_init",
   {
