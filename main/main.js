@@ -342,6 +342,74 @@ function getSubagentsSnapshot() {
   return pending;
 }
 
+/* ---- 官方 UI 当前上下文（会话 → 项目目录）：0.1.2 官方每会话独立 cwd，
+ *  权威信号 = $DSH_HOME/storages/session_projcache/sessions/<sessionId>.json
+ *  （record.identity.cwd，mtime 随会话活动刷新）。桌面端 git/地图/占用/活动/用量
+ *  一律跟随“当前会话项目”而非启动时的工作区，切工作区/对话即跟随。
+ *  排除子代理（子代理高频写 projcache，但会话文件首帧 origin='subagent'）。 ---- */
+let uiCtxCache = { at: 0, value: null };
+
+/** 会话文件是否存在且为首帧 origin='subagent'（轻量：只解头部少量字节）。 */
+function isSubagentSessionFileByCwd(cwd, sessionId) {
+  try {
+    const file = path.join(state.dshHome, 'sessions', workspaceSessionKey(cwd), sessionId, 'session.jsonl.zstd');
+    return require('./notify').isSubagentSessionFile(file);
+  } catch { return false; }
+}
+
+/** 读取官方 UI 当前上下文（TTL 3s；force=true 强制重扫）。 */
+async function syncUiContext(force = false) {
+  const now = Date.now();
+  if (!force && uiCtxCache.value && now - uiCtxCache.at < 3000) return uiCtxCache.value;
+  try {
+    const dir = path.join(state.dshHome, 'storages', 'session_projcache', 'sessions');
+    if (!fs.existsSync(dir)) return uiCtxCache.value || null;
+    const entries = [];
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!e.name.endsWith('.json')) continue;
+      const file = path.join(dir, e.name);
+      try { entries.push({ sessionId: e.name.slice(0, -5), file, mtimeMs: fs.statSync(file).mtimeMs }); } catch { /* 忽略 */ }
+    }
+    entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    let picked = null;
+    for (const en of entries.slice(0, 8)) {
+      let cwd = null;
+      let title = null;
+      try {
+        const doc = JSON.parse(fs.readFileSync(en.file, 'utf8'));
+        cwd = doc && doc.record && doc.record.identity && doc.record.identity.cwd ? String(doc.record.identity.cwd) : null;
+        const t = doc && doc.record && doc.record.rows && doc.record.rows.title;
+        title = t && t.val && typeof t.val === 'string' ? String(t.val).slice(0, 60) : null;
+      } catch { /* 解析失败则跳过该候选 */ }
+      if (!cwd) continue;
+      // 子代理高频写 projcache，但会话文件首帧 origin='subagent'——按 cwd 定位后轻读排除
+      if (isSubagentSessionFileByCwd(cwd, en.sessionId)) continue;
+      picked = { sessionId: en.sessionId, cwd, title, mtimeMs: en.mtimeMs };
+      break;
+    }
+    if (!picked) return uiCtxCache.value || null;
+    uiCtxCache = { at: now, value: picked };
+    if (!state.ui || state.ui.sessionId !== picked.sessionId || state.ui.cwd !== picked.cwd) {
+      const prev = state.ui;
+      state.ui = picked;
+      logLine('[ui-context] 当前会话/项目：' + picked.sessionId.slice(0, 12) + ' @ ' + picked.cwd + (prev ? '（原 ' + prev.cwd + '）' : ''));
+      broadcastState();
+      setTimeout(() => broadcastPanelRefresh('ui-context'), 0);
+    }
+    return picked;
+  } catch { return uiCtxCache.value || null; }
+}
+
+/** 面板数据源目录：官方当前会话项目优先，回退桌面端托管工作区。 */
+function effectiveWorkspace() {
+  return (state.ui && state.ui.cwd) || state.workspace;
+}
+
+/** 面板数据源目录（与 effectiveWorkspace 同义，供不依赖 state 的调用点）。 */
+function panelRootWorkspace() {
+  return effectiveWorkspace();
+}
+
 /* ---- 用量扫描（与子代理扫描同样的异步化：子进程/回退同步 + 缓存 + 在途共享） ---- */
 const USAGE_CACHE_TTL_MS = 30000;
 let usageCacheKey = null;
@@ -391,12 +459,13 @@ function runUsageScan({ dshHome, workspace, usagePrices }) {
   return Promise.resolve().then(() => scanWorkspaceUsage({ dshHome, workspace, usagePrices }));
 }
 
-/** 用量快照：30s 缓存 + 在途共享；tier 由调用方（主进程）叠加。 */
-function getUsageSnapshot() {
-  if (!state.workspace) {
+/** 用量快照：30s 缓存 + 在途共享；tier 由调用方（主进程）叠加。cwdOverride 缺省跟随官方当前项目。 */
+function getUsageSnapshot(cwdOverride) {
+  const ws = cwdOverride || effectiveWorkspace();
+  if (!ws) {
     return Promise.resolve({ ok: true, summary: null });
   }
-  const key = `${state.dshHome}\n${state.workspace}\n${JSON.stringify(settings.get('usagePrices') || null)}`;
+  const key = `${state.dshHome}\n${ws}\n${JSON.stringify(settings.get('usagePrices') || null)}`;
   const now = Date.now();
   if (usageCacheResult && usageCacheKey === key && now - usageCacheAt < USAGE_CACHE_TTL_MS) {
     return Promise.resolve(usageCacheResult);
@@ -407,7 +476,7 @@ function getUsageSnapshot() {
   usageCacheKey = key;
   const pending = runUsageScan({
     dshHome: state.dshHome,
-    workspace: state.workspace,
+    workspace: ws,
     usagePrices: settings.get('usagePrices'),
   })
     .then(
@@ -480,6 +549,7 @@ const state = {
   quietHoursEnd: settings.get('quietHoursEnd') || '07:00',
   memoryAutoEnabled: settings.get('memoryAutoEnabled') !== false,
   memoryFile: null,             // 启动后填充：<dshHome>/memory/memory.jsonl
+  ui: null,                     // 官方 UI 当前上下文 {sessionId, cwd, title}（syncUiContext 轮询填充）
 };
 
 /** 记忆文件路径（受控位置，随 DSH_HOME 走，纳入备份）。 */
@@ -2164,17 +2234,19 @@ function startRpc() {
     return result;
   });
   rpc.on('getUsage', async (params) => {
+    await syncUiContext();
+    const ws = (params && params.workspace) || effectiveWorkspace();
     // 在子进程扫描（解压全部会话文件很重，直接调用会周期性阻塞主进程造成 UI 卡顿）
     try {
       return await runUsageScanChild({
         dshHome: state.dshHome,
-        workspace: (params && params.workspace) || state.workspace,
+        workspace: ws,
         usagePrices: settings.get('usagePrices'),
       });
     } catch {
       return scanWorkspaceUsage({
         dshHome: state.dshHome,
-        workspace: (params && params.workspace) || state.workspace,
+        workspace: ws,
         usagePrices: settings.get('usagePrices'),
       });
     }
@@ -2411,13 +2483,17 @@ function startRpc() {
 
   /** 地图状态（含 git HEAD 变化判定）。 */
   async function projectMapStatusPayload() {
+    await syncUiContext();
+    const ws = effectiveWorkspace();
     let gitH = null;
-    try { gitH = await gitHead(state.workspace); } catch { /* 忽略 */ }
-    return projectMap.mapStatus(state.workspace, { currentGitHead: gitH || undefined });
+    try { gitH = await gitHead(ws); } catch { /* 忽略 */ }
+    return projectMap.mapStatus(ws, { currentGitHead: gitH || undefined });
   }
 
   rpc.on('projectMapGet', async () => {
-    const map = projectMap.readMap(state.workspace);
+    await syncUiContext();
+    const ws = effectiveWorkspace();
+    const map = projectMap.readMap(ws);
     const status = await projectMapStatusPayload();
     return { ok: true, exists: map != null, map, ...status };
   });
@@ -2452,9 +2528,12 @@ function startRpc() {
     if (result && result.ok && result.released && result.released.length) broadcastPanelRefresh('edit-release');
     return result;
   });
-  rpc.on('editStatus', async (params) => workspaceGuard.claimsStatus(state.workspace, {
-    sessionId: (params && params.sessionId) || activeSessionId(),
-  }));
+  rpc.on('editStatus', async (params) => {
+    await syncUiContext();
+    return workspaceGuard.claimsStatus(effectiveWorkspace(), {
+      sessionId: (params && params.sessionId) || activeSessionId(),
+    });
+  });
   rpc.on('editJournal', async (params) => ({ ok: true, entries: workspaceGuard.readJournal(state.workspace, params && params.limit) }));
 
   /* ---- Git（代理可用的安全白名单操作；全部走 git-runner 白名单封装） ---- */
@@ -2889,18 +2968,20 @@ function registerDesktopFeatureIpc() {
   });
 
   ipcMain.handle('dsh:git-summary', async () => {
-    if (!state.workspace) return { ok: false, error: '\u5c1a\u672a\u9009\u62e9\u5de5\u4f5c\u533a' };
+    await syncUiContext();
+    const ws = effectiveWorkspace();
+    if (!ws) return { ok: false, error: '\u5c1a\u672a\u9009\u62e9\u5de5\u4f5c\u533a' };
     try {
       // 非 git 目录快速返回（避免每次轮询都拉起 3 条 git 命令）
-      if (!fs.existsSync(path.join(state.workspace, '.git'))) {
-        logLine('[git-summary] not a git repo（workspace=' + state.workspace + '）');
-        return { ok: true, output: '# 当前目录不是 Git 仓库', workspace: state.workspace, notGit: true };
+      if (!fs.existsSync(path.join(ws, '.git'))) {
+        logLine('[git-summary] not a git repo（project=' + ws + '）');
+        return { ok: true, output: '# 当前目录不是 Git 仓库', workspace: ws, notGit: true };
       }
-      const output = await gitSummary(state.workspace);
+      const output = await gitSummary(ws);
       // 诊断日志：面板「非 Git 工作区」排查用（输出不含敏感信息）
       const head = String(output || '').split('\n').filter((l) => l.trim()).slice(0, 3).join(' | ');
       logLine('[git-summary] ok，head=' + head.slice(0, 200));
-      return { ok: true, output, workspace: state.workspace };
+      return { ok: true, output, workspace: ws };
     } catch (err) {
       logLine('[git-summary] 失败：' + ((err && err.message) || err));
       return { ok: false, error: (err && err.message) || String(err) };
@@ -2908,22 +2989,26 @@ function registerDesktopFeatureIpc() {
   });
 
   ipcMain.handle('dsh:project-map-status', async () => {
-    if (!state.workspace) return { ok: false, error: '\u5c1a\u672a\u9009\u62e9\u5de5\u4f5c\u533a' };
+    await syncUiContext();
+    const ws = effectiveWorkspace();
+    if (!ws) return { ok: false, error: '\u5c1a\u672a\u9009\u62e9\u5de5\u4f5c\u533a' };
     try {
       let gitH = null;
-      try { gitH = await gitHead(state.workspace); } catch { /* 忽略 */ }
-      return { ok: true, ...projectMap.mapStatus(state.workspace, { currentGitHead: gitH || undefined }) };
+      try { gitH = await gitHead(ws); } catch { /* 忽略 */ }
+      return { ok: true, ...projectMap.mapStatus(ws, { currentGitHead: gitH || undefined }) };
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };
     }
   });
 
   ipcMain.handle('dsh:edit-status', async () => {
-    if (!state.workspace) return { ok: false, error: '\u5c1a\u672a\u9009\u62e9\u5de5\u4f5c\u533a' };
+    await syncUiContext();
+    const ws = effectiveWorkspace();
+    if (!ws) return { ok: false, error: '\u5c1a\u672a\u9009\u62e9\u5de5\u4f5c\u533a' };
     try {
-      const root = path.join(state.dshHome, 'sessions', workspaceSessionKey(state.workspace));
+      const root = path.join(state.dshHome, 'sessions', workspaceSessionKey(ws));
       const active = findActiveSession(root);
-      return { ok: true, ...workspaceGuard.claimsStatus(state.workspace, { sessionId: active ? active.sessionId : null }), currentSessionId: active ? active.sessionId : null };
+      return { ok: true, ...workspaceGuard.claimsStatus(ws, { sessionId: active ? active.sessionId : null }), currentSessionId: active ? active.sessionId : null };
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };
     }
@@ -4555,13 +4640,15 @@ function currentModelCached() {
  *  提取技能/MCP 调用、当前轮次读的文件/网页来源、本轮产出文件。缓存按文件 mtime 驱动。 */
 let activityCache = { file: '', mtimeMs: 0, value: null, pending: null };
 /**
- * 会话活动足迹：默认取 workspace 下最新写入的会话；传 sessionId 时只扫该会话
- * 文件（右侧面板“本会话活动”按当前查看会话展示，避免切对话后串台）。
+ * 会话活动足迹：默认取指定项目（wsOverride/官方当前会话项目）下最新写入的会话；
+ * 传 sessionId 时只扫该会话文件（右侧面板“本会话活动”按当前查看会话展示）。
  * 返回附加 sessionId（数据对应的会话）；缓存按文件 mtime 驱动，天然按会话隔离。
  */
-async function getSessionActivity(sessionId) {
+async function getSessionActivity(sessionId, wsOverride) {
   try {
-    const root = path.join(state.dshHome, 'sessions', workspaceSessionKey(state.workspace));
+    const ws = wsOverride || effectiveWorkspace();
+    if (!ws) return { ok: false, error: 'no workspace' };
+    const root = path.join(state.dshHome, 'sessions', workspaceSessionKey(ws));
     if (!fs.existsSync(root)) return { ok: false, error: 'no sessions' };
     let best = null;
     if (sessionId) {
@@ -4625,7 +4712,13 @@ async function getSessionActivity(sessionId) {
     return { ok: false, error: (err && err.message) || String(err) };
   }
 }
-ipcMain.handle('dsh:activity-get', (_event, payload) => getSessionActivity(payload && payload.sessionId ? String(payload.sessionId) : undefined));
+ipcMain.handle('dsh:activity-get', async (_event, payload) => {
+  await syncUiContext();
+  return getSessionActivity(
+    payload && payload.sessionId ? String(payload.sessionId) : undefined,
+    effectiveWorkspace(),
+  );
+});
 
 /**
  * 截图补救（主进程执行，免疫页面重载/重渲染）：页面检测到图片发送被拒后调用，

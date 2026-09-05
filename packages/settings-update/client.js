@@ -2374,9 +2374,12 @@ window.__ModuleLoader__.load({
 
         h('div', { style: envGroupTitle }, '环境'),
         h('div', { style: { display: 'flex', flexDirection: 'column' } },
-          envRow('工作区', (state && state.workspace) || '—', 'ws'),
+          // 项目 = 官方 UI 当前会话所在项目目录（跨工作区/对话隔离的根）；会话行优先显示其标题
+          envRow('项目', ((state.ui && state.ui.cwd) || (state && state.workspace) || '—'), 'ws'),
           envRow('harness', (state && state.installed) ? 'v' + state.installed : '—', 'ver'),
-          envRow('会话', currentSessionId ? String(currentSessionId).slice(0, 12) : '—', 'sid'),
+          envRow('会话', currentSessionId
+            ? ((state.ui && state.ui.sessionId === currentSessionId && state.ui.title) || String(currentSessionId).slice(0, 12))
+            : '—', 'sid'),
           envRow('端口', (state && state.port) || (state && state.url ? String(state.url).split(':').pop() : '—'), 'port')),
 
         h('div', { style: envGroupTitle }, 'Git'),
