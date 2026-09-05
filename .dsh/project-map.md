@@ -86,8 +86,8 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - main/plugin-deps.js：resolvableFrom/missingDeps/ensureLocalDeps/installPluginDeps（npm 运行器探测，run 可注入）
 - main/web-patch.js：generateWebPatch/buildPatchRows/renderPatchYaml（MCP + llm 行 + settings-update/subagent-approval 行）；ensureClientPackageLink 委托给 boot-preflight
 - scripts/test-harness-rpc.js：RPC 信封/分类单测（14 项）
-- scripts/test-upgrade-guard.js：升级防护判定单测（16 项）
-- scripts/test-boot-preflight.js：链接自愈/依赖补装单测（10 项）
+- scripts/test-upgrade-guard.js：升级防护判定单测（20 项：guard/冒烟判定/triage/rollbackDecision/失败分类）
+- scripts/test-boot-preflight.js：链接自愈/依赖补装单测（11 项，含"指向旧拷贝→重建到 packages"漂移回归）
 - main/office-docx.js：Office 文件级通道（纯 Node）：readDocxText（mammoth）、markdownToDocx（docx 包；标题/列表/引用/代码/表格/行内样式解析 parseMarkdown/parseInline 可测）、readXlsx/writeXlsx（exceljs）
 - main/office-com.js：Office 应用通道（COM）：detectOffice（注册表 App Paths + 常见路径 + PS 探测）、verifyWordCom/exportDocxToPdf/openInWord（调 scripts/office-com/word.ps1，stdout 仅 OK/ERR、JSON 落临时文件）；exec/shellResolver 注入可测（setShellResolverForTest）
 - scripts/office-com/word.ps1：Word COM 自动化（detect/export-pdf/open；SaveAs2 PDF=17；纯 ASCII 红线）
