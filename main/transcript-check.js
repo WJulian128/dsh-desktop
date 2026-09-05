@@ -77,23 +77,42 @@ function sessionContainsText({ dshHome, workspace, mark, full = false }) {
     if (!mark || typeof mark !== 'string' || !mark) return false;
     const root = path.join(dshHome, 'sessions', workspaceSessionKey(workspace));
     if (!fs.existsSync(root)) return false;
-    let best = null;
+    const files = [];
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const file = path.join(root, entry.name, 'session.jsonl.zstd');
       let m = 0;
       try { m = fs.statSync(file).mtimeMs; } catch { continue; }
-      if (!best || m > best.mtimeMs) best = { file, mtimeMs: m };
+      files.push({ file, mtimeMs: m });
     }
-    if (!best) return false;
-    // 超大会话文件：压缩后 >2MB（默认）/ >16MB（full）不整体解压，走尾帧精确检查
-    const limit = full ? 16 * 1024 * 1024 : 2 * 1024 * 1024;
-    try {
-      if (fs.statSync(best.file).size > limit) {
-        return tailFramesContainsMark(best.file, mark);
+    if (!files.length) return false;
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    if (!full) {
+      // 快检：只查最新会话（发送确认用；刚发送的会话文件 mtime 必然最新）。
+      const best = files[0];
+      try {
+        if (fs.statSync(best.file).size > 2 * 1024 * 1024) return tailFramesContainsMark(best.file, mark);
+      } catch { return false; }
+      return scanFileFull(best.file, mark);
+    }
+    // 跨重启去重：消息可能落在非最新会话（多会话/子代理并行写入时，
+    // 更新的文件常是子代理会话）。按 mtime 从新到旧扫多个会话直到命中。
+    // 预算：最多 12 个会话、累计 64MB 压缩数据；>16MB 的文件只做尾帧检查。
+    const MAX_SESSIONS = 12;
+    const BYTE_BUDGET = 64 * 1024 * 1024;
+    let scannedBytes = 0;
+    for (const { file } of files.slice(0, MAX_SESSIONS)) {
+      let size = 0;
+      try { size = fs.statSync(file).size; } catch { continue; }
+      if (size > 16 * 1024 * 1024) {
+        if (tailFramesContainsMark(file, mark)) return true;
+        continue;
       }
-    } catch { return false; }
-    return scanFileFull(best.file, mark);
+      if (scannedBytes + size > BYTE_BUDGET) continue;
+      scannedBytes += size;
+      if (scanFileFull(file, mark)) return true;
+    }
+    return false;
   } catch { return false; }
 }
 

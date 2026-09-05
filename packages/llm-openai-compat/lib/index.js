@@ -1,8 +1,7 @@
 import z from "@deepseek-ai/schemastery";
-import { CONTEXT_WINDOW_EXCEEDED_CODE, CallId, EMPTY_RESPONSE_CODE, LlmAdapter, LlmError, ProviderRequestId, QUOTA_EXCEEDED_CODE, RetryPolicySchema, assertUsableApiKey, attributionHeaders, contentHasImage, isContextWindowExceededError, isQuotaExceededError, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
+import { CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, LlmAdapter, LlmError, ProviderRequestId, QUOTA_EXCEEDED_CODE, RetryPolicySchema, ToolCallId, assertUsableApiKey, attributionHeaders, contentHasImage, isContextWindowExceededError, isQuotaExceededError, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
-import { deepEqualJson, installSettingsSection } from "@deepseek-ai/dsh-settings";
 import { MAX_TIMER_DELAY_MS, idleWatchdog, timeoutOf } from "@deepseek-ai/dsh-timeout";
 import { EventSourceParserStream } from "eventsource-parser/stream";
 //#region lib/types/serialize.js
@@ -223,7 +222,7 @@ function closeBlock(block) {
 		};
 		case "tool-call": return {
 			type: "tool-call",
-			id: CallId(block.callId ?? ""),
+			id: ToolCallId(block.callId ?? ""),
 			name: block.name ?? "",
 			arguments: block.text
 		};
@@ -338,7 +337,7 @@ async function* translate(payloads) {
 				yield {
 					type: "tool-call-delta",
 					index: block.index,
-					id: CallId(block.callId ?? ""),
+					id: ToolCallId(block.callId ?? ""),
 					...block.name !== void 0 ? { name: block.name } : {},
 					argumentsDelta: fragment
 				};
@@ -626,7 +625,7 @@ var OpenAiCompatAdapter = class extends LlmAdapter {
 * @module @dsh-desktop/llm-openai-compat
 */
 const name = "llm-openai-compat";
-const inject = ["llm"];
+const inject = ["llm", "settings"];
 /** Settings namespace pattern enforced by dsh-settings. */
 const NAMESPACE_PATTERN = /^[a-z][a-z0-9-]*$/;
 /** Provider route used when `config.providerName` is omitted. */
@@ -778,16 +777,23 @@ function apply(ctx, config) {
 	let registeredPolicy = entry.retryPolicy;
 	const ensureRegistrationFacts = () => {
 		const policy = options().retryPolicy;
-		if (deepEqualJson(policy, registeredPolicy)) return;
+		if (JSON.stringify(policy) === JSON.stringify(registeredPolicy)) return;
 		registration.replace([providerName]);
 		registeredPolicy = policy;
 	};
-	installSettingsSection(ctx, NS, Config, config, {
-		setSource: (source) => {
-			current = source;
-		},
-		onChange: ensureRegistrationFacts
-	});
+	// 0.1.2-rc.1+：dsh-settings 不再导出独立 helper，改为服务方法
+	// settings.installSection(owner, ns, schema, entry, hooks)。
+	const settings = ctx.settings ?? ctx.get("settings");
+	if (settings !== void 0) {
+		settings.installSection(ctx, NS, Config, config, {
+			setSource: (source) => {
+				current = source;
+			},
+			onChange: ensureRegistrationFacts
+		});
+	} else {
+		ctx.logger.warn("llm-openai-compat: ctx.settings unavailable; runtime settings overrides are disabled");
+	}
 }
 //#endregion
 export { Config, DEFAULT_API_KEY_ENV, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DEFAULT_PROVIDER_NAME, DEFAULT_STREAM_IDLE_TIMEOUT_MS, OpenAiCompatAdapter, apply, inject, name, resolveAdapterOptions };

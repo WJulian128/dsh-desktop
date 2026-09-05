@@ -44,9 +44,23 @@ class HarnessController extends EventEmitter {
     this.binPath = binPath; this.cwd = cwd; this.env = env;
     this.host = host; this.port = port; this.patches = patches;
     this.child = null; this.settled = false; this.lastError = null;
+    this.webUrl = null; // 子进程打印的完整 URL（含 ?token=…，0.1.2-rc.1+ 需要）
+    this.recentLog = []; // 子进程输出环形缓冲（启动失败时供分类/提示，上限 120 行）
   }
 
   get url() { return 'http://' + this.host + ':' + this.port; }
+
+  /** 最近 N 行子进程输出（失败诊断素材；join 后截断超长行）。 */
+  get lastLogTail() {
+    const lines = this.recentLog.slice(-60).map((l) => (l.length > 500 ? l.slice(0, 500) + '…' : l));
+    return lines.join('\n');
+  }
+
+  pushLog(line) {
+    this.recentLog.push(line);
+    if (this.recentLog.length > 120) this.recentLog.splice(0, this.recentLog.length - 120);
+    this.emit('log', line);
+  }
 
   start() {
     return new Promise((resolve, reject) => {
@@ -64,15 +78,29 @@ class HarnessController extends EventEmitter {
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
         });
-        const onChunk = (chunk) => {
-          for (const line of String(chunk).split(/\r?\n/)) {
-            const t = line.trim();
-            if (!t) continue;
-            this.emit('log', t);
-          }
+        // 行缓冲：dsh web 的带 token URL 可能跨 chunk，不能按 chunk 切行丢内容。
+        const makeLineSink = () => {
+          let buffer = '';
+          return (chunk) => {
+            buffer += chunk.toString();
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop();
+            for (const line of lines) {
+              const t = line.trim();
+              if (!t) continue;
+              this.pushLog(t);
+              // 0.1.2-rc.1+ 的 web 页面需要 token 认证：完整 URL（含 ?token=…）
+              // 由子进程打印，页面加载与主进程 RPC 都必须走它。
+              if (t.startsWith('dsh web: ')) {
+                this.webUrl = t.slice('dsh web: '.length).trim();
+              }
+            }
+          };
         };
-        this.child.stdout.on('data', onChunk);
-        this.child.stderr.on('data', onChunk);
+        const onStdout = makeLineSink();
+        const onStderr = makeLineSink();
+        this.child.stdout.on('data', onStdout);
+        this.child.stderr.on('data', onStderr);
         this.child.on('error', (err) => {
           if (err.code === 'ENOENT' && cmd === 'node' && !extraEnv.ELECTRON_RUN_AS_NODE) {
             // PATH 里没有 node 时退回 Electron 自带的 Node
@@ -89,9 +117,15 @@ class HarnessController extends EventEmitter {
           }
           this.emit('exit', code);
         });
-        waitForHttp(this.url).then(() => {
+        waitForHttp(this.url).then(async () => {
+          // HTTP 已应答但 token URL 可能还没打印完：等一小段（最多 ~8s）再定版。
+          // 8s 只是上限：token 行一到立即跳出，正常启动多等 <100ms。
+          const deadline = Date.now() + 8000;
+          while (!this.webUrl && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
           this.settled = true;
-          resolve(this.url);
+          resolve(this.webUrl || this.url);
         }).catch((err) => {
           this.fail(err);
           reject(err);

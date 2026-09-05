@@ -13,9 +13,12 @@ const { Worker } = require('node:worker_threads');
 const { Settings } = require('./settings');
 const { HarnessController, pickFreePort } = require('./harness');
 const updater = require('./updater');
+const harnessRpc = require('./harness-rpc');
+const upgradeGuard = require('./upgrade-guard');
+const bootPreflight = require('./boot-preflight');
 const { runHeadless } = require('./headless');
 const { DesktopRpcServer } = require('./desktop-rpc');
-const { generateWebPatch, ensureClientPackageLink, providerEnvKey } = require('./web-patch');
+const { generateWebPatch, providerEnvKey } = require('./web-patch');
 const { runDshPlugin } = require('./plugin-cli');
 const { scanWorkspaceUsage, queryBalance, workspaceSessionKey, resolvePriceTier, decompressFrames, resolveDeepSeekKey } = require('./usage');
 const { describeImage, testVision, modelSupportsVision, readCurrentModel } = require('./vision');
@@ -444,6 +447,7 @@ const state = {
   phase: 'starting',
   port: null,
   url: null,
+  webUrl: null, // 带 token 的完整 URL（0.1.2-rc.1+ 页面/API 认证需要；无 token 时为 null）
   workspace: settings.get('workspace'),
   dshHome: process.env.DSH_HOME || path.join(os.homedir(), '.dsh'),
   installed: null,
@@ -855,31 +859,51 @@ function dispatchTaskToHarness(text, { send = true } = {}) {
 
 /* ---------- 任务派发：官方 RPC 优先，剪贴板兜底；队列 + 门控 + 重试 ---------- */
 
+/** 本进程已验证可用的端点风格（'new'=Typert 斜杠 / 'legacy'=点分）与参数名。 */
+const rpcStyleByMethod = new Map();
+const rpcArgsKeyByMethod = new Map();
+/** 认证警告只打一次，避免 401 风暴刷日志。 */
+let rpcAuthWarned = false;
+
+/** 首猜风格：URL 带 token ⇒ 0.1.2-rc.1+（新风格）；无 token ⇒ 旧版（点分）。 */
+function preferredRpcStyle() {
+  return state.webUrl && state.webUrl !== state.url ? 'new' : 'legacy';
+}
+
 /**
- * 调用 harness 官方 /api RPC（dsh-host-apiproxy 的 client-request 信封，
- * 与官方 Web UI 同一条通道）。信任栅栏只要求 loopback Host + 无跨站标记，
- * 主进程直连 127.0.0.1 天然满足，不依赖窗口聚焦与页面 DOM。
+ * 调用 harness 官方 /api RPC（与官方 Web UI 同一条通道；loopback Host 信任栅栏，
+ * 主进程直连天然满足，不依赖窗口聚焦与页面 DOM）。
+ *
+ * 自适应三件事（0.1.1-rc.2 → 0.1.2-rc.1 升级事故教训，实现见 harness-rpc.js）：
+ *  1. 端点/信封双风格：新版 Typert（namespace/method + {args} 包装）与旧版
+ *     （点分 + 透传）互不兼容。先按当前版本首猜风格发；响应特征表明“风格不匹配”
+ *     （校验发生在执行前，无副作用）时换另一风格重试一次，成功后记忆到本进程；
+ *  2. 参数名自适应：Typert 要求精确参数名（session.list 是 _request，其余 request），
+ *     arguments-invalid 时换候选参数名重试一次；
+ *  3. token 认证：/api 需要 dsh-auth-* cookie（GET 带 token 的 URL 换取，token
+ *     在本进程生命周期内可反复换取）；401 时串行换取一次后重试一次，绝不循环。
  * @returns {Promise<{status:number, body:object|null}>}
  */
 function rpcCall(method, payload, timeoutMs = 10000) {
-  return new Promise((resolve, reject) => {
+  const remember = (style, argsKey) => {
+    rpcStyleByMethod.set(method, style);
+    rpcArgsKeyByMethod.set(method, argsKey);
+  };
+  const attempt = (style, argsKey) => new Promise((resolve, reject) => {
     if (!state.url) return reject(new Error('harness URL 不可用'));
-    const body = JSON.stringify({
-      type: 'client-request',
-      rpcId: crypto.randomUUID(),
-      method,
-      payload,
-    });
-    const url = new URL(state.url + '/api/' + method);
+    const request = harnessRpc.buildRequest(method, payload, style, argsKey);
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(request.body),
+    };
+    if (rpcAuthCookie) headers.Cookie = rpcAuthCookie.name + '=' + rpcAuthCookie.value;
+    const url = new URL(request.path, state.url);
     const req = http.request({
       hostname: url.hostname,
       port: url.port,
       path: url.pathname,
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-      },
+      headers,
       timeout: timeoutMs,
     }, (res) => {
       let data = '';
@@ -887,13 +911,101 @@ function rpcCall(method, payload, timeoutMs = 10000) {
       res.on('end', () => {
         let parsed = null;
         try { parsed = JSON.parse(data || '{}'); } catch { /* 非 JSON 响应 */ }
-        resolve({ status: res.statusCode, body: parsed });
+        resolve({ status: res.statusCode, body: parsed, text: data });
       });
     });
     req.on('timeout', () => req.destroy(new Error('RPC 超时（' + method + '）')));
     req.on('error', reject);
-    req.end(body);
+    req.end(request.body);
   });
+
+  // 401 → 换认证 cookie 后同风格重试一次（串行换取，绝不循环）。
+  const attemptWithAuth = async (style, argsKey) => {
+    const res = await attempt(style, argsKey);
+    if (res.status !== 401) return res;
+    const ok = await refreshRpcAuth(true);
+    if (!ok) {
+      if (!rpcAuthWarned) {
+        rpcAuthWarned = true;
+        logLine('[rpc] 认证 cookie 换取失败：访问带 token 的 URL 未返回 dsh-auth-* cookie' +
+          (state.webUrl ? '（token 可能已随服务重启失效，重启桌面端即可恢复）' : '（旧版 harness 无认证，忽略）'));
+      }
+      return res;
+    }
+    return attempt(style, argsKey);
+  };
+
+  return (async () => {
+    const style = rpcStyleByMethod.get(method) || preferredRpcStyle();
+    const argsKey = rpcArgsKeyByMethod.get(method) || harnessRpc.argsKeyFor(method);
+    const verdict = (res) => harnessRpc.classifyResponse(res.status, res.text || (res.body ? JSON.stringify(res.body) : ''));
+    const first = await attemptWithAuth(style, argsKey);
+    const v1 = verdict(first);
+    if (v1 === 'ok') { remember(style, argsKey); return first; }
+    if (v1 === 'style-mismatch') {
+      // 风格不对：换另一风格重试一次（校验先于执行，安全）。
+      const other = style === 'new' ? 'legacy' : 'new';
+      const second = await attemptWithAuth(other, argsKey);
+      if (verdict(second) === 'ok') { remember(other, argsKey); return second; }
+      return second;
+    }
+    if (v1 === 'args-mismatch') {
+      // 新风格参数名不对：换候选参数名重试一次。
+      const alt = harnessRpc.argsKeyCandidates(method).find((k) => k !== argsKey) || argsKey;
+      const second = await attemptWithAuth(style, alt);
+      if (verdict(second) === 'ok') { remember(style, alt); return second; }
+      return second;
+    }
+    if (v1 === 'unauthorized' && rpcAuthWarned) {
+      logLine('[rpc] ' + method + ' 401 且无法恢复（认证 cookie 无效）');
+    }
+    return first;
+  })();
+}
+
+/* ---- harness web token 认证（0.1.2-rc.1+；token 有效期内可反复换取） ---- */
+
+/** 当前 harness 实例的认证 cookie（访问 state.webUrl 换取；null = 尚未获取）。 */
+let rpcAuthCookie = null;
+/** 进行中的换取 Promise（并发请求共用同一次换取，不重复打服务）。 */
+let rpcAuthInflight = null;
+
+/** 从 Set-Cookie 响应头数组中提取 dsh-auth-* 认证 cookie。 */
+function extractAuthCookie(setCookieHeaders) {
+  for (const raw of setCookieHeaders || []) {
+    const pair = String(raw).split(';')[0];
+    const idx = pair.indexOf('=');
+    if (idx <= 0) continue;
+    const name = pair.slice(0, idx).trim();
+    if (name.startsWith('dsh-auth-')) return { name, value: pair.slice(idx + 1).trim() };
+  }
+  return null;
+}
+
+/**
+ * 访问带 token 的完整 URL（state.webUrl）换取认证 cookie。返回是否成功。
+ * 串行化：并发调用共享同一次换取；force=true 时无视已有 cookie 重新换取
+ * （401 失效后）。
+ */
+function refreshRpcAuth(force = false) {
+  if (!force && rpcAuthCookie) return Promise.resolve(true);
+  if (!state.webUrl) return Promise.resolve(false);
+  if (rpcAuthInflight) return rpcAuthInflight;
+  rpcAuthInflight = new Promise((resolve) => {
+    const req = http.get(state.webUrl, { headers: { 'User-Agent': 'dsh-desktop' } }, (res) => {
+      const cookie = extractAuthCookie(res.headers['set-cookie']);
+      res.resume();
+      if (cookie) {
+        rpcAuthCookie = cookie;
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(5000, () => { req.destroy(); resolve(false); });
+  }).finally(() => { rpcAuthInflight = null; });
+  return rpcAuthInflight;
 }
 
 /** 通过官方 /api 通道把文本送进对话（session.prompt）。返回是否被接受。 */
@@ -910,6 +1022,7 @@ async function rpcSendPrompt(text) {
   const prompt = await rpcCall('session.prompt', {
     sessionId: session.sessionId,
     mode: 'queue',
+    requestId: crypto.randomUUID(),
     content: [{ type: 'text', text }],
   });
   const result = prompt.body && prompt.body.result;
@@ -1053,6 +1166,7 @@ function buildChildEnv() {
 function launchHarness(port, withPatch = true) {
   state.port = port;
   state.url = 'http://127.0.0.1:' + port;
+  state.webUrl = null;
   harness = new HarnessController({
     binPath: dshBinPath(),
     cwd: state.workspace,
@@ -1073,14 +1187,30 @@ function launchHarness(port, withPatch = true) {
       }
     }
   });
-  return harness.start();
+  return harness.start().then((startedUrl) => {
+    // 0.1.2-rc.1+：子进程打印的 URL 带 token（认证必需）；旧版本无 token 时退回基础 URL。
+    state.webUrl = startedUrl || state.url;
+    if (state.webUrl && state.webUrl !== state.url) refreshRpcAuth().catch(() => {});
+    return startedUrl;
+  });
 }
 
 async function startHarness() {
+  if (state.updating) {
+    logLine('[main] 正在更新 harness，忽略启动请求');
+    return;
+  }
   state.phase = 'starting';
   state.error = null;
   state.url = null;
+  state.webUrl = null;
   state.patchDropped = false;
+  rollbackPrompted = false;
+  // 上一实例的 RPC 风格/参数名/cookie 全部作废（服务重启后可能已换版本/进程）。
+  rpcStyleByMethod.clear();
+  rpcArgsKeyByMethod.clear();
+  rpcAuthCookie = null;
+  rpcAuthWarned = false;
   broadcastState();
   if (harness) await harness.stop().catch(() => {});
   harness = null;
@@ -1088,6 +1218,14 @@ async function startHarness() {
   // 每次启动重新生成注入补丁（设置可能被修改过）。
   pruneBuiltinMcpServers(); // 幂等：先清理与内置 MCP 同名的历史配置，防 patch id 重复
   generatePatchFile();
+
+  // 启动前自检自愈（0.1.2-rc.1 升级事故防错）：profiles 插件链接 + 本地插件依赖。
+  // 只记日志不阻断：真正失败由下方 patchDropped 降级与升级回滚兜底。
+  try {
+    bootPreflight.runBootPreflight({ dshHome: state.dshHome, appDir: APP_DIR, log: logLine });
+  } catch (err) {
+    logLine('[boot-preflight] 自检异常（忽略，继续启动）：' + (err && err.message ? err.message : err));
+  }
 
   let port;
   let reusedSaved = false;
@@ -1139,15 +1277,26 @@ async function startHarness() {
 
   if (lastErr) {
     state.phase = 'error';
-    state.error = lastErr && lastErr.message ? lastErr.message : String(lastErr);
+    // 附上子进程最近输出：启动失败多数是插件树/依赖问题，光靠 exit code 无从排查。
+    const tail = harness && harness.lastLogTail ? '\n\n— 最近输出 —\n' + harness.lastLogTail : '';
+    state.error = (lastErr && lastErr.message ? lastErr.message : String(lastErr)) + tail;
+    logLine('[main] harness 启动失败：' + (lastErr && lastErr.message ? lastErr.message : lastErr));
+    if (tail) logLine('[main] 启动失败最近输出：\n' + harness.lastLogTail);
     broadcastState();
+    afterBootFailure(lastErr); // 升级后首启失败 → 提示一键回滚（每轮启动只提示一次）
     return;
   }
   state.phase = 'ready';
   broadcastState();
   taskDispatcher.flush(); // 就绪后补发积压的定时任务
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(state.url);
+  // 0.1.2-rc.1+：必须加载带 token 的完整 URL（页面 303 换取 dsh-auth cookie）；
+  // 旧版本无 token 时 state.webUrl 与 state.url 相同，行为不变。
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(state.webUrl || state.url);
+  scheduleBootSmoke(); // 就绪后异步冒烟：认证 + 核心 RPC + 版本簿记（升级防护）
 }
+
+/** 每轮启动只弹一次回滚询问（防启动失败刷屏）。 */
+let rollbackPrompted = false;
 
 async function chooseWorkspaceDialog() {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -1326,20 +1475,46 @@ function ensurePackagedDshDir() {
   }
 }
 
-async function applyUpdate(version) {
+/**
+ * 执行一次 dsh 版本安装（更新或回滚），带升级防护：
+ *  1. 先停掉正在运行的 harness 再 npm install——npm 会重写 node_modules，
+ *     运行中的 harness 会读到半更新依赖直接崩溃（0.1.2-rc.1 起插件树失败=致命，
+ *     2026-09 升级事故根因），并污染后续启动；
+ *  2. 安装前把当前版本记入 updateGuard.prev（回滚依据，保留到启动冒烟通过）；
+ *  3. 安装成功后 status=applied（不清除），由重启后的“启动冒烟”验收并清除——
+ *     冒烟 = 认证 cookie 换取 + session/list 核心 RPC；失败可一键回滚到 prev。
+ * @param {string} [version] 目标版本（缺省取 state.latest）
+ * @param {{reason?: string}} [opts] reason='回滚' 时文案与标题切换
+ */
+async function applyUpdate(version, { reason = '更新' } = {}) {
   if (state.updating) return;
   const target = version || state.latest;
   if (!target) return;
+  const isRollback = reason === '回滚';
+  const installedBefore = updater.installedVersion(dshInstallDir(), APP_DIR);
   state.updating = true;
-  state.updateProgress = { stage: 'install', text: '\u6b63\u5728\u4e0b\u8f7d\u5e76\u5b89\u88c5\u66f4\u65b0\u2026' };
+  state.phase = 'updating';
+  state.updateProgress = { stage: 'stop', text: '正在停止当前服务…' };
+  state.error = null;
   broadcastState();
-  if (mainWindow && !mainWindow.isDestroyed()) injectBadge(mainWindow);
-  // 更新事务标记：安装前写入 in-progress（进程被杀/半更新时，下次启动可检测并提示重试）
-  const guard = { version: target, startedAt: new Date().toISOString(), status: 'in-progress' };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.loadFile(path.join(APP_DIR, 'renderer', 'loading.html'));
+  }
+  // 停服安装（防“半更新依赖崩溃循环”）：安装期间不重启 harness。
+  if (harness) {
+    try { await harness.stop(); } catch (err) {
+      logLine('[updater] 停止 harness 失败（忽略，继续安装）：' + (err && err.message ? err.message : err));
+    }
+  }
+  harness = null;
+  // 更新事务标记：安装前写入 in-progress，prev 记录回滚点（进程被杀/半更新时可检测）。
+  const guard = upgradeGuard.guardForUpdate({ installed: installedBefore, target });
   settings.set('updateGuard', guard);
-  logLine('[updater] \u5f00\u59cb\u66f4\u65b0\u5230 v' + target + '\uff0c\u5199\u5165 updateGuard\uff08in-progress\uff09');
+  logLine('[updater] ' + reason + '到 v' + target + '（原 v' + (installedBefore || '未知') + '），已停止 harness，updateGuard=in-progress');
   try {
     const runner = resolveNpmRunner();
+    state.updateProgress = { stage: 'install', text: isRollback ? '正在回滚安装…' : '正在下载并安装更新…' };
+    broadcastState();
     await updater.applyUpdate(dshInstallDir(), target, runner, (text) => {
       state.updateProgress.text = text;
       broadcastState();
@@ -1351,31 +1526,46 @@ async function applyUpdate(version) {
       throw new Error('\u5b89\u88c5\u540e\u7248\u672c\u6821\u9a8c\u5931\u8d25\uff1a\u671f\u671b v' + target + '\uff0c\u5b9e\u9645 v' + installedNow +
         '\u3002\u8bf7\u7a0d\u540e\u91cd\u8bd5\uff0c\u6216\u624b\u52a8\u6267\u884c npm install @deepseek-ai/dsh@' + target);
     }
-    // 更新成功：先标记 ok（防重启间隙误判为失败），重启前清除
-    settings.set('updateGuard', { ...guard, status: 'ok' });
+    // 安装成功：标记 applied（保留 prev），重启后由启动冒烟验收并清除。
+    settings.set('updateGuard', upgradeGuard.markApplied(guard));
     state.updating = false;
     state.updateProgress = null;
     state.updateAvailable = false;
     broadcastState();
+    let detail = isRollback
+      ? '已回滚到 v' + target + '，应用将立即重启以加载该版本。'
+      : '应用将立即重启以加载新版本；启动后会自动验证核心 API，验证失败可一键回滚到 v' + (installedBefore || '上一版本') + '。';
+    if (!app.isPackaged && isRollback) {
+      // 开发模式：代码与 dsh 同仓演进，回滚只改 dsh 依赖行；如需连代码一起回退请用 git。
+      detail += '\n\n（开发模式提示：若需要连桌面端代码一起回退，请恢复 git 的 package.json/package-lock.json 后重新 npm install。）';
+    }
     await msgBox({
-      type: 'info', title: '\u66f4\u65b0\u5b8c\u6210', noLink: true, buttons: ['\u7acb\u5373\u91cd\u542f'],
-      message: 'harness \u5df2\u66f4\u65b0\u5230 v' + target,
-      detail: '\u5e94\u7528\u5c06\u7acb\u5373\u91cd\u542f\u4ee5\u52a0\u8f7d\u65b0\u7248\u672c\u3002',
+      type: 'info', title: isRollback ? '回滚完成' : '更新完成', noLink: true, buttons: ['立即重启'],
+      message: isRollback ? 'harness 已回滚到 v' + target : 'harness 已更新到 v' + target,
+      detail,
     });
     quitting = true;
-    settings.set('updateGuard', null); // 更新成功，清除事务标记
     if (harness) await harness.stop().catch(() => {});
     app.relaunch();
     app.exit(0);
   } catch (err) {
     // 失败：标记 failed（下次启动提示"上次更新未完成，可重试"，不自动重装）
     const prev = settings.get('updateGuard') || guard;
-    settings.set('updateGuard', { version: prev.version || target, startedAt: prev.startedAt || guard.startedAt, status: 'failed' });
-    logLine('[updater] \u66f4\u65b0\u5931\u8d25\uff1a' + (err && err.message ? err.message : err));
+    settings.set('updateGuard', {
+      version: prev.version || target, startedAt: prev.startedAt || guard.startedAt,
+      prev: prev.prev || guard.prev, status: 'failed',
+    });
+    logLine('[updater] ' + reason + '失败：' + (err && err.message ? err.message : err));
     state.updating = false;
     state.updateProgress = null;
     broadcastState();
-    dialog.showErrorBox('\u66f4\u65b0\u5931\u8d25', err && err.message ? err.message : String(err));
+    dialog.showErrorBox((isRollback ? '回滚失败' : '更新失败'), err && err.message ? err.message : String(err));
+    // 恢复服务：当前安装的版本仍可用（失败时 updater 已回滚 package.json）。
+    state.phase = 'starting';
+    broadcastState();
+    startHarness().catch((e) => {
+      logLine('[updater] 恢复 harness 失败：' + (e && e.message ? e.message : e));
+    });
   }
 }
 
@@ -1384,10 +1574,22 @@ function checkUpdateGuard() {
   const guard = settings.get('updateGuard');
   if (!guard || typeof guard.version !== 'string') return;
   const installed = updater.installedVersion(dshInstallDir(), APP_DIR);
-  // ok 标记或目标版本已就位：更新实际已完成，仅清理残留标记
-  if (guard.status === 'ok' || installed === guard.version) {
+  const lastGood = settings.get(upgradeGuard.KEYS.LAST_GOOD);
+  const targetInPlace = installed === guard.version;
+  // ok 标记，或 applied 且版本已就位且已通过冒烟：事务实际完成，仅清理残留标记。
+  if (guard.status === 'ok' || (guard.status === 'applied' && targetInPlace && lastGood === installed)) {
     logLine('[updater] updateGuard \u72b6\u6001 ' + guard.status + ' \u4f46 v' + installed + ' \u5df2\u5c31\u4f4d\uff0c\u6e05\u9664\u6807\u8bb0');
     settings.set('updateGuard', null);
+    return;
+  }
+  if (guard.status === 'applied') {
+    // 安装完成、等待启动冒烟验收（ready 后由 postBootSmoke 处理，这里不打扰用户）。
+    if (!targetInPlace) {
+      logLine('[updater] applied 但版本不符（期望 v' + guard.version + '，实际 v' + installed + '），清除失效事务');
+      settings.set('updateGuard', null);
+      return;
+    }
+    logLine('[updater] 等待启动冒烟验收 v' + guard.version + (lastGood ? '（上次可用 v' + lastGood + '）' : '（首次记录可用版本）'));
     return;
   }
   if (guard.status !== 'failed' && guard.status !== 'in-progress') return; // 未知状态不打扰
@@ -1402,6 +1604,88 @@ function checkUpdateGuard() {
   }).then(({ response }) => {
     if (response === 0) applyUpdate(guard.version);
   }).catch(() => {});
+}
+
+/* ---------- 升级防护：启动冒烟 / 一键回滚（0.1.2-rc.1 升级事故防错） ---------- */
+
+/**
+ * 启动冒烟：服务就绪后验证“认证 cookie 换取 + 核心 RPC（session/list）”可用。
+ * 通过 ⇒ 把当前版本记为 lastKnownGoodVersion；升级事务（applied）就此验收清除。
+ * 失败 ⇒ 若恰是升级后首启，提示一键回滚到 guard.prev（每轮启动只提示一次）。
+ * 无论升级与否都跑（廉价），让“API 悄悄变了”最多拖延到下次启动被发现。
+ */
+function scheduleBootSmoke() {
+  setTimeout(() => { postBootSmoke().catch((err) => logLine('[upgrade] 冒烟异常：' + (err && err.message ? err.message : err))); }, 1500);
+}
+
+/** 冒烟核心：换 cookie + session.list。返回 {ok, detail}，绝不抛。 */
+async function smokeHarnessApi() {
+  if (!state.url) return { ok: false, detail: 'URL 未就绪' };
+  try {
+    const res = await rpcCall('session.list', {}, 12000);
+    const body = res && res.body;
+    if (res.status !== 200 || !body || !body.result || body.result.ok !== true) {
+      const errorText = body && body.result && body.result.error ? body.result.error.message : '';
+      return { ok: false, detail: 'HTTP ' + res.status + (errorText ? '：' + errorText : '') };
+    }
+    const items = body.result.value && body.result.value.items;
+    if (!Array.isArray(items)) return { ok: false, detail: 'session.list 结果缺少 items' };
+    return { ok: true, detail: items.length + ' 个会话' };
+  } catch (err) {
+    return { ok: false, detail: (err && err.message) || String(err) };
+  }
+}
+
+/** 就绪后的异步冒烟 + 版本簿记（升级防护核心）。 */
+async function postBootSmoke() {
+  const installed = updater.installedVersion(dshInstallDir(), APP_DIR);
+  const lastGood = settings.get(upgradeGuard.KEYS.LAST_GOOD);
+  const guard = settings.get('updateGuard');
+  const sm = await smokeHarnessApi();
+  if (sm.ok) {
+    settings.set(upgradeGuard.KEYS.LAST_GOOD, installed);
+    if (guard && guard.status === 'applied' && guard.version === installed) {
+      settings.set('updateGuard', null);
+    }
+    logLine('[upgrade] 冒烟通过（v' + installed + '，' + sm.detail + '），记为可用版本');
+    return;
+  }
+  logLine('[upgrade] 冒烟失败：' + sm.detail + '（v' + installed + '，上次可用 v' + (lastGood || '未知') + '）');
+  const triage = upgradeGuard.triageUpgradeBootFailure({ installed, lastGood, guard });
+  if (!triage.promptRollback || rollbackPrompted) return;
+  rollbackPrompted = true;
+  promptRollback(triage.prev, triage.reason);
+}
+
+/** 提示一键回滚到 prev（applyUpdate 复用同一事务化安装）。 */
+function promptRollback(prev, reason) {
+  if (!prev || state.updating) return;
+  msgBox({
+    type: 'warning', title: 'harness 启动/验证异常', noLink: true,
+    message: '当前版本 v' + updater.installedVersion(dshInstallDir(), APP_DIR) + ' 未通过启动验证。',
+    detail: reason + '。是否回滚到升级前的版本 v' + prev + '？（回滚会停止服务并重新安装，完成后自动重启）',
+    buttons: ['回滚到 v' + prev, '保留当前版本'], defaultId: 1, cancelId: 1,
+  }).then(({ response }) => {
+    if (response === 0) applyUpdate(prev, { reason: '回滚' });
+  }).catch(() => {});
+}
+
+/** 启动彻底失败后的升级防护判定：分类写日志；升级后首启失败则提示回滚。 */
+function afterBootFailure(err) {
+  try {
+    const installed = updater.installedVersion(dshInstallDir(), APP_DIR);
+    const guard = settings.get('updateGuard');
+    const lastGood = settings.get(upgradeGuard.KEYS.LAST_GOOD);
+    const classified = upgradeGuard.classifyBootFailure((err && err.message) || String(err));
+    logLine('[upgrade] 启动失败分类：' + classified.kind + '（' + (classified.hint || '见最近输出') + '）');
+    if (classified.kind === 'port-busy') return; // 换端口/重启即可，不打扰
+    const triage = upgradeGuard.triageUpgradeBootFailure({ installed, lastGood, guard });
+    if (!triage.promptRollback || rollbackPrompted) return;
+    rollbackPrompted = true;
+    promptRollback(triage.prev, triage.reason);
+  } catch (err2) {
+    logLine('[upgrade] 启动失败判定异常（忽略）：' + (err2 && err2.message ? err2.message : err2));
+  }
 }
 
 /* ---------- 桌面端 RPC（供 harness 内 MCP 服务器调用） ---------- */
@@ -3620,7 +3904,9 @@ async function injectAndSendOnce(text) {
   while (Date.now() < confirmDeadline) {
     await new Promise((r) => setTimeout(r, 1000));
     try {
-      if (mark && await sessionContainsTextAsync(mark)) { confirmed = true; break; }
+      // full=true：跨会话扫描——并行写入的子代理会话常比当前会话 mtime 更新，
+      // 只查最新会话会把刚发送成功的消息误判为未确认，导致重复按 Enter。
+      if (mark && await sessionContainsTextAsync(mark, { full: true })) { confirmed = true; break; }
     } catch { /* 检查失败继续等 */ }
     let st2 = { readOnly: false };
     try { st2 = await readEditor('read'); } catch { /* 保持默认 */ }
@@ -3765,6 +4051,7 @@ async function rpcPromptCurrentSession(text) {
     const prompt = await rpcCall('session.prompt', {
       sessionId,
       mode: 'queue',
+      requestId: crypto.randomUUID(),
       content: [{ type: 'text', text: String(text) }],
     }, 15000);
     const result = prompt.body && prompt.body.result;
@@ -4395,10 +4682,11 @@ async function continueInNewConversation() {
     return;
   }
   // 用官方 HTTP RPC 创建新会话（不依赖 DOM 按钮——按钮文案/结构易变不可靠）：
-  // POST /api/session.create { workspaceId } → {result:{ok:true,value:{sessionId}}}。
+  // POST /api/session/create { workspaceId } → {result:{ok:true,value:{sessionId}}}。
   // ⚠️ 必须传 workspaceId 而非 cwd：官方实现只在传了 workspaceId 时才把新会话 attach 进
   // 工作区（workspace.attachSession），只传 cwd 会创建"未分组"的会话。
-  // workspaceId 通过 workspace.list 按路径匹配得到。loopback 请求过信任围栏。
+  // 0.1.2-rc.1+ 已移除 workspace.list，改用幂等的 workspace.create（对已存在目录
+  // resolve 返回现有 workspace，不会重复注册）。loopback 请求过信任围栏。
   // 随后把新会话 id 写入官方客户端持久化（localStorage dsh.sessions.current，客户端
   // 每次切换会话都会写该键），刷新页面后客户端恢复它为当前会话——再用官方
   // session.prompt 把接续指令直发新会话（host 侧，不经 DOM/输入框，不会发错会话，
@@ -4407,14 +4695,14 @@ async function continueInNewConversation() {
   let createError = null;
   let workspaceId = null;
   try {
-    const ws = await rpcCall('workspace.list', {}, 10000);
-    const items = ws.body && ws.body.result && ws.body.result.value && ws.body.result.value.items;
-    if (Array.isArray(items) && state.workspace) {
-      const target = path.normalize(String(state.workspace)).toLowerCase();
-      const hit = items.find((it) => it && it.path && path.normalize(String(it.path)).toLowerCase() === target);
-      if (hit && hit.workspaceId) workspaceId = String(hit.workspaceId);
+    // workspace.create 幂等：已注册的目录直接返回现有 workspace（created=false）。
+    const ws = await rpcCall('workspace.create', { path: state.workspace }, 10000);
+    const created = ws.body && ws.body.result;
+    if (ws.status === 200 && created && created.ok === true
+      && created.value && created.value.workspace && created.value.workspace.workspaceId) {
+      workspaceId = String(created.value.workspace.workspaceId);
     }
-    if (!workspaceId) logLine('[handoff] \u672a\u627e\u5230\u5339\u914d\u5de5\u4f5c\u533a\uff08path=' + state.workspace + '\uff09\uff0c\u56de\u9000 cwd \u5efa\u4f1a\u8bdd\uff08\u5c06\u663e\u793a\u4e3a\u672a\u5206\u7ec4\uff09');
+    if (!workspaceId) logLine('[handoff] \u672a\u89e3\u6790\u5230\u5de5\u4f5c\u533a\uff08path=' + state.workspace + '\uff09\uff0c\u56de\u9000 cwd \u5efa\u4f1a\u8bdd\uff08\u5c06\u663e\u793a\u4e3a\u672a\u5206\u7ec4\uff09');
   } catch (err) {
     logLine('[handoff] \u67e5\u8be2\u5de5\u4f5c\u533a\u5931\u8d25\uff1a' + (err && err.message ? err.message : err));
   }
@@ -4464,6 +4752,7 @@ async function continueInNewConversation() {
       const prompt = await rpcCall('session.prompt', {
         sessionId,
         mode: 'queue',
+        requestId: crypto.randomUUID(),
         content: [{ type: 'text', text }],
       }, 15000);
       const pr = prompt.body && prompt.body.result;
@@ -4906,8 +5195,13 @@ async function main() {
 
   // RPC 必须先于 harness 子进程启动：buildChildEnv 需要把地址/令牌注入子进程环境。
   await startRpc();
-  // 让 harness 能解析桌面端客户端插件（写入 $DSH_HOME/profiles/node_modules 链接）。
-  ensureClientPackageLink({ dshHome: state.dshHome, appDir: APP_DIR, log: logLine });
+  // 启动前自检自愈（startHarness 内也会跑；这里先做一次，保证链接在首启前就绪）：
+  // 让 harness 能解析全部桌面端插件（$DSH_HOME/profiles/node_modules 链接 + 本地依赖）。
+  try {
+    bootPreflight.runBootPreflight({ dshHome: state.dshHome, appDir: APP_DIR, log: logLine });
+  } catch (err) {
+    logLine('[boot-preflight] 自检异常（忽略）：' + (err && err.message ? err.message : err));
+  }
   await startHarness();
   startScheduler();
   setTimeout(() => { checkUpdates({ manual: false }); }, 5000);

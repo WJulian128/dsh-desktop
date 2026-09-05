@@ -4,13 +4,13 @@
 DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，内置更新检查、多厂商模型调度、本地视觉模型、记忆/子代理/定时任务/系统体检等桌面能力；通过 main/mcp-server.mjs（stdio MCP）+ 桌面端 HTTP RPC 向 harness 内模型暴露 `mcp__dsh_desktop__*` 工具。含 GitHub 集成、UI 内省能力（读自己窗口 DOM 精确定位/点击/验证）、外部机器人桥（QQ 官方机器人双向对话 + 企业微信单向推送）。
 
 ## 模块划分
-- `main/`（主进程，40+ 模块）：main.js 总装（IPC/RPC/菜单/托盘/启动/自动接续 + client-debug 诊断通道 + UI 内省 RPC + 截图链路 + 机器人桥接线）；harness.js 服务控制；web-patch.js 生成 web.patch.yml 注入客户端插件与 MCP；mcp-server.mjs 内置 MCP 工具（stdio）；desktop-rpc.js 桌面端 HTTP RPC 服务；github.js GitHub 设备码登录/仓库/搜索/重命名/可见性；ui-introspect.js UI 内省注入脚本构造器；notify.js 任务完成通知（回合结束判定）
+- `main/`（主进程，40+ 模块）：main.js 总装（IPC/RPC/菜单/托盘/启动/自动接续 + client-debug 诊断通道 + UI 内省 RPC + 截图链路 + 机器人桥接线 + **升级事务/启动冒烟/一键回滚**）；harness.js 服务控制（行缓冲 + webUrl 捕获 + 最近输出环形缓冲）；web-patch.js 生成 web.patch.yml 注入客户端插件与 MCP；harness-rpc.js /api RPC 双风格信封自适应（纯函数）；upgrade-guard.js 升级防护状态与启动失败分类（纯函数）；boot-preflight.js 启动前自检（profiles 插件链接 + 本地依赖自愈）；plugin-deps.js 插件本地依赖补装；mcp-server.mjs 内置 MCP 工具（stdio）；desktop-rpc.js 桌面端 HTTP RPC 服务；github.js GitHub 设备码登录/仓库/搜索/重命名/可见性；ui-introspect.js UI 内省注入脚本构造器；notify.js 任务完成通知（回合结束判定）
 - `main/bot-gateway/`：外部机器人桥——qq-gateway.js（QQ 官方 v2 API + WebSocket 网关）、wechat-push.js（企业微信 webhook 推送）、reply-bridge.js（注入会话→等回复→回推）
 - `preload/preload.js`：contextBridge 暴露 window.dshDesktop（dsh:* IPC + onPanelRefresh + github* 桥 + openExternal + clientDebug + onRescueProgress + bot* 桥）
 - `renderer/`：加载页/终端/Git 窗（git-diff.html）/截图选区（capture.html 冻结画面+选区）
 - `packages/settings-update/`：设置页（10 分区，含「GitHub 与 Git」「机器人」）+ 右侧常驻面板客户端插件（client.js；导出 _parseGitSummary 供单测；截图按钮 + 拒收补救 + 插话按钮）
 - `packages/subagent-approval/`、`packages/llm-openai-compat/`：子代理审批桥 / 通用 OpenAI 兼容厂商 adapter
-- `scripts/`：测试（test-*.js/mjs，27 项）+ 打包冒烟 + install-skills.mjs + rewrite-history.js
+- `scripts/`：测试（test-*.js/mjs，30 项）+ 打包冒烟 + install-skills.mjs + rewrite-history.js
 
 ## 入口
 - Electron 入口：main/main.js（package.json "main"）
@@ -21,7 +21,10 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 ## 关键约定
 - ⚠️ 编码红线：.ps1/.js 源文件禁止 PowerShell 5.1 Get-Content/Set-Content 往返；.ps1 含中文必须带 UTF-8 BOM 或纯 ASCII；改文件一律用 read/edit/write 工具或 Node 显式 utf8
 - **代码一致性**：多轮编码按 code-consistency skill 工作——约定快照 `.dsh/code-conventions.md`（每轮写码前必读、新决策回写、memory 同步）
-- 客户端插件源码在 packages/settings-update/；harness 实际打包 $DSH_HOME/profiles/node_modules/@dsh-desktop/settings-update 副本（桌面端启动时同步），改源码必须重启桌面端
+- 客户端插件源码在 packages/（settings-update/llm-openai-compat/subagent-approval）；桌面端启动前由 boot-preflight.js 维护 $DSH_HOME/profiles/node_modules/@dsh-desktop/* junction——settings-update 目标优先 packages/ 源目录（node_modules file: 依赖可能被 npm 重装成普通拷贝，指向拷贝会吃不到源码改动）；改客户端插件源码后需重启桌面端
+- **harness 升级/回滚纪律（2026-09-05 事故后）**：applyUpdate 先停 harness 再 npm install（运行中安装会撞半更新依赖崩溃）；updateGuard in-progress(prev)→applied→重启后启动冒烟（token cookie 换取 + session.list）通过才清除并记 lastKnownGoodVersion；冒烟失败/升级后首启失败可一键回滚 guard.prev；启动前必跑 bootPreflight.runBootPreflight 自检
+- **/api RPC 双风格自适应**：一切官方 RPC 走 main.js rpcCall → harness-rpc.js（0.1.2-rc.1+：namespace/method + {args:{_request|request}}；旧版：点分 + payload 透传）；风格/参数名错误特征（gateway/bad-request、arguments-invalid、404）只重试一次并记忆；新增调用端点一律在 harness-rpc.js 的 ARGS_KEY_OVERRIDES 登记
+- **本地插件依赖不靠根提升**：Loader 0.1.2-rc.1 起从插件真实目录向上解析；deps 声明在插件自身 package.json，缺失由 plugin-deps.js 本地补装（根 postinstall + 启动前自检共用）
 - 改 main 进程代码需重启桌面端生效；restart_app 带 task 自动接续
 - 纯 Node 模块放 main/ 顶层并配 scripts/ 单测；网络调用走注入式 transport（github.js setTransportForTest、bot-gateway 构造参数注入）
 - **主线程零解压**：zstd 解压重活一律 worker/child 化
@@ -50,6 +53,10 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - ⚠️ **截图闪回**：2.5s 安全阀/延迟 show 回调必须校验 captureFlowToken（closeCaptureWindow 作废流程），否则快速截完图后窗口被重新弹出露出上一次冻结画面
 - ⚠️ **UTF-8 截断**：按字节截断多字节文本时，结尾落在字符**首字节**（0xC0-0xF7）不会触发"去后续字节"循环 → 产生 U+FFFD。逐字符按字节预算拼接最稳（wechat-push.truncateUtf8Bytes 已踩坑修复）
 - QQ 机器人：C2C 被动回复窗口 5 分钟（先占位回复保主动额度，每月仅 4 条/用户）；群 AT 被动窗口仅 5 秒（群回复必然走主动消息）；token 过期 7200s 需缓存刷新；Node ≥22 内置 WebSocket（无需 ws 依赖）
+- ⚠️ **0.1.2-rc.1 web token 认证**：dsh web 子进程打印的完整 URL 带 ?token=（每进程一次性随机）；页面加载与 /api RPC 必须走它（GET 换取 dsh-auth-* cookie，token 生命周期内可反复换取）。桌面端捕获到 token 但服务已换进程时 401——先重启桌面端
+- ⚠️ **npm file: 依赖形态漂移**：node_modules/@dsh-desktop/settings-update 可能是 junction 也可能是普通拷贝（npm 行为随版本/install-links 变）；一律以 boot-preflight 为准维护 profiles 链接，别假设形态
+- ⚠️ **沙箱 EPERM 假失败**：在受限沙箱里跑 scripts/test-*.js，凡 spawn 外部进程（zstd/win-control/MCP stdio）的用例报 EPERM——不是代码回归，提权复验
+- ⚠️ **loader entry 失败=致命**：0.1.2-rc.1 起插件树里任何 loader entry 导入失败都会让整个 harness 退出（旧版容忍）；升级后“启动不了”优先查 dsh-web.log 里的 plugin tree/loader entry/ERR_MODULE_NOT_FOUND
 
 ## 重点文件职责摘要
 - main/project-map.js：代码地图存储与 stale 指纹判定（.dsh/project-map.md + state.json）
@@ -67,13 +74,22 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - main/bot-gateway/wechat-push.js：企微 webhook markdown 推送（errcode 45009 限流不重试、其他错误重试一次、truncateUtf8Bytes 4096 字节逐字符截断）
 - main/bot-gateway/reply-bridge.js：ReplyBridge（注入→轮询会话文件→extractReplyAfter 等 step/end 提取回复，串行队列防错位）+ findSessionFile
 - main/mcp-server.mjs：全部 dsh_desktop_* 工具（含 github_*、ui_*、wechat_push、bot_status）
-- main/main.js：startRpc()（ui*/github*/git*/地图/占用/wechatPush/botStatus）；registerDesktopFeatureIpc()（含 bot-config/set/test 系列）；auto-resume 接续；computerScreenshot target:self；**截图链路**：dsh:screenshot（captureFlowToken 防闪回）→ capture-region → screenshot-ready；screenshot-rescue 并行识别 + rescue-progress；**机器人桥接线**：applyBotConfig/readBotConfig、handleQqMessage（占位→注入→分段回推）、pushLatestReplyToWechat（notify onComplete 触发）
+- main/main.js：startRpc()（ui*/github*/git*/地图/占用/wechatPush/botStatus）；registerDesktopFeatureIpc()（含 bot-config/set/test 系列）；auto-resume 接续；computerScreenshot target:self；**截图链路**：dsh:screenshot（captureFlowToken 防闪回）→ capture-region → screenshot-ready；screenshot-rescue 并行识别 + rescue-progress；**机器人桥接线**：applyBotConfig/readBotConfig、handleQqMessage（占位→注入→分段回推）、pushLatestReplyToWechat（notify onComplete 触发）；**升级防护接线**：applyUpdate（先停服再安装 + reason 更新/回滚）、checkUpdateGuard（applied 等冒烟）、postBootSmoke/promptRollback/afterBootFailure、startHarness 前 runBootPreflight
+- main/harness.js：HarnessController（行缓冲解析子进程输出、捕获 'dsh web: ' token URL、recentLog 环形缓冲供失败诊断、webUrl 最多等 8s）+ pickFreePort/waitForHttp
+- main/harness-rpc.js：buildRequest/classifyResponse/argsKeyFor/splitMethod（双风格端点信封 + 响应错误分类，纯函数）
+- main/upgrade-guard.js：guardForUpdate/markApplied/shouldSmoke/triageUpgradeBootFailure/classifyBootFailure + KEYS（updateGuard/lastKnownGoodVersion）
+- main/boot-preflight.js：DESKTOP_PLUGINS 清单 + ensurePackageLink/ensureProfilePluginLinks/ensureLocalPluginDeps/runBootPreflight（启动前自检自愈，纯 Node 可单测）
+- main/plugin-deps.js：resolvableFrom/missingDeps/ensureLocalDeps/installPluginDeps（npm 运行器探测，run 可注入）
+- main/web-patch.js：generateWebPatch/buildPatchRows/renderPatchYaml（MCP + llm 行 + settings-update/subagent-approval 行）；ensureClientPackageLink 委托给 boot-preflight
+- scripts/test-harness-rpc.js：RPC 信封/分类单测（14 项）
+- scripts/test-upgrade-guard.js：升级防护判定单测（16 项）
+- scripts/test-boot-preflight.js：链接自愈/依赖补装单测（10 项）
 - packages/settings-update/client.js：parseGitSummary（/^#\s/ 小节头）；EnvPanel 五组；SchedPanel；GithubSection；**BotSection（机器人分区）**：QQ 凭据+状态实时+测试+注册指引折叠、企微 webhook+推送策略+测试；**截图补救**：ScreenshotButton + MutationObserver 精确文案 + 800ms shadow 轮询 + onRescueProgress 占位更新
 - renderer/capture.html：截图选区页（冻结背景 + 蓝色选区 + cdebug 全链路日志）
 - renderer/git-diff.html：Git 变更窗（提交/回滚/分支 + 占用警告）
 - scripts/test-notify.js：notify 判定单测（22 项，含工具前段落拒绝判定）
 - scripts/test-qq-gateway.js：QQ 网关协议单测（19 项：token/网关地址/Identify/READY/事件归一化/RESUME/sendText/stop 清理）
-- scripts/test-wechat-push.js：企微推送单测（10 项：errcode/重试/截断/URL 校验）
+- scripts/test-wechat-push.js：企微 webhook 推送单测（10 项：errcode/重试/截断/URL 校验）
 - scripts/test-bot-bridge.js：回复桥单测（11 项：extractReplyAfter/findSessionFile/端到端/串行队列）
 - scripts/test-scan-worker.js：scan worker 端到端
 - scripts/test-ui-introspect.js：UI 内省单测 11 项（fake DOM）

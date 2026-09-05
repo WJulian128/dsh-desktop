@@ -13,11 +13,14 @@
  *   - configured `effort` is sent as top-level `reasoning_effort` (instance
  *     default, overridable per request); unconfigured instances omit the field
  *
- * Monorepo resolution: dsh-llm and friends live in the repo root's
- * node_modules (some nested under @deepseek-ai/dsh). Node's ESM resolver walks
- * up from this package, so the script bootstraps junction links under
+ * Monorepo resolution: peer packages (dsh-llm and friends) live in the repo
+ * root's node_modules — some nested under @deepseek-ai/dsh, some hoisted to the
+ * top level depending on the harness version. Node's ESM resolver walks up from
+ * this package, so the script bootstraps junction links under
  * packages/llm-openai-compat/node_modules pointing at the real installs —
  * created idempotently, never touching anything outside this package.
+ * Regular dependencies (schemastery / eventsource-parser / dsh-credentials)
+ * are installed locally by npm and need no link.
  *
  * Run: node scripts/smoke.mjs  (exit 0 = pass, non-zero = fail)
  */
@@ -30,22 +33,28 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
 const repoRoot = join(pkgRoot, "..", "..");
 
-/** Packages this adapter imports directly and where they are installed. */
+/** Peer packages this adapter imports directly, with candidate install paths.
+ *  The first existing candidate wins: harness versions hoist differently. */
+function candidates(name) {
+  return [
+    join(repoRoot, "node_modules", "@deepseek-ai", name),
+    join(repoRoot, "node_modules", "@deepseek-ai", "dsh", "node_modules", "@deepseek-ai", name),
+  ];
+}
+
 const DEPENDENCY_TARGETS = [
-  ["@deepseek-ai/dsh-llm", join(repoRoot, "node_modules", "@deepseek-ai", "dsh-llm")],
-  ["@deepseek-ai/dsh-credentials", join(repoRoot, "node_modules", "@deepseek-ai", "dsh", "node_modules", "@deepseek-ai", "dsh-credentials")],
-  ["@deepseek-ai/dsh-launch-environment", join(repoRoot, "node_modules", "@deepseek-ai", "dsh", "node_modules", "@deepseek-ai", "dsh-launch-environment")],
-  ["@deepseek-ai/dsh-settings", join(repoRoot, "node_modules", "@deepseek-ai", "dsh-settings")],
-  ["@deepseek-ai/dsh-timeout", join(repoRoot, "node_modules", "@deepseek-ai", "dsh-timeout")],
-  ["@deepseek-ai/schemastery", join(repoRoot, "node_modules", "@deepseek-ai", "schemastery")],
-  ["eventsource-parser", join(repoRoot, "node_modules", "eventsource-parser")],
+  ["@deepseek-ai/dsh-llm", candidates("dsh-llm")],
+  ["@deepseek-ai/dsh-launch-environment", candidates("dsh-launch-environment")],
+  ["@deepseek-ai/dsh-settings", candidates("dsh-settings")],
+  ["@deepseek-ai/dsh-timeout", candidates("dsh-timeout")],
 ];
 
 /** Ensure node_modules/<name> resolves to the real install (junction on Windows). */
 function bootstrapLinks() {
-  for (const [name, target] of DEPENDENCY_TARGETS) {
-    if (!existsSync(target)) {
-      throw new Error(`smoke: dependency target missing for ${name}: ${target}`);
+  for (const [name, targets] of DEPENDENCY_TARGETS) {
+    const target = targets.find((t) => existsSync(t));
+    if (!target) {
+      throw new Error(`smoke: dependency target missing for ${name}; tried: ${targets.join(", ")}`);
     }
     const link = join(pkgRoot, "node_modules", name);
     if (existsSync(link)) continue;

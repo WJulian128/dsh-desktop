@@ -1,6 +1,7 @@
 'use strict';
 const path = require('node:path');
 const fs = require('node:fs');
+const bootPreflight = require('./boot-preflight');
 
 /**
  * 生成注入 harness web profile 的 --patch 覆盖文件（YAML）：
@@ -259,6 +260,11 @@ function generateWebPatch({ file, appDir, dshHome, enableDesktopMcp = true, mcpS
  * 的平铺 fallback 目录（dsh 启动时会用安装包依赖闭包维护符号链接，且从不删除已有
  * 链接）。桌面端自己的包不在该闭包里，因此这里预先创建一条 junction/符号链接，
  * 让 Loader 与客户端模块扫描器都能找到它。
+ *
+ * 通用实现（含悬挂修复 / 完整目标校验 / 启动前自愈）见 boot-preflight.js ——
+ * 升级事故后所有桌面端插件（settings-update / llm-openai-compat /
+ * subagent-approval）都由主进程在启动 harness 前统一维护，此处仅保留单一插件
+ * 的兼容入口。
  * @param {object} options
  * @param {string} options.dshHome - DSH_HOME
  * @param {string} options.appDir - 桌面端应用目录
@@ -266,52 +272,9 @@ function generateWebPatch({ file, appDir, dshHome, enableDesktopMcp = true, mcpS
  * @returns {boolean} 是否确保可用
  */
 function ensureClientPackageLink({ dshHome, appDir, log = () => {} }) {
-  const link = path.join(dshHome, 'profiles', 'node_modules', '@dsh-desktop', 'settings-update');
-  const target = path.join(appDir, 'node_modules', '@dsh-desktop', 'settings-update');
-  // 关键：解析出真实目录再建链接。Windows 上“junction → junction”链式路径在部分
-  // FS 操作（Node ESM 解析、npm reify）下不可靠，直接指向最终真实目录最稳妥。
-  let realTarget = target;
-  try { realTarget = fs.realpathSync(target); } catch { /* 目标缺失时退回原路径 */ }
-  const targetComplete = () => {
-    try {
-      return fs.existsSync(path.join(target, 'package.json'))
-        && fs.existsSync(path.join(target, 'lib', 'index.js'))
-        && fs.existsSync(path.join(target, 'client.js'));
-    } catch { return false; }
-  };
-  try {
-    // 目标包不完整（例如开发中先建链接后补文件）时绝不创建/保留链接，
-    // 否则 loader 解析不到 package.json 会把包目录当普通目录找 index.js，
-    // 导致整个 harness 插件树加载失败、客户端启动失败。
-    if (!targetComplete()) {
-      log('[web-patch] 目标包不完整，跳过链接：' + target);
-      return false;
-    }
-    fs.mkdirSync(path.dirname(link), { recursive: true });
-    let existing = null;
-    try { existing = fs.lstatSync(link); } catch { /* 不存在 */ }
-    if (existing) {
-      if (!existing.isSymbolicLink()) {
-        log('[web-patch] ' + link + ' 已存在但不是符号链接，跳过（请手动处理）');
-        return false;
-      }
-      // 自愈：链接目标可达且包完整则保留；悬挂/指向旧目录则删除重建。
-      let usable = false;
-      try {
-        const real = fs.realpathSync(link);
-        usable = fs.existsSync(path.join(real, 'package.json')) && fs.existsSync(path.join(real, 'lib', 'index.js'));
-      } catch { /* 悬挂链接 */ }
-      if (usable) return true;
-      log('[web-patch] 修复不可用的客户端插件链接：' + link);
-      try { fs.unlinkSync(link); } catch { /* 忽略 */ }
-    }
-    fs.symlinkSync(realTarget, link, process.platform === 'win32' ? 'junction' : 'dir');
-    log('[web-patch] 已创建客户端插件链接：' + link + ' -> ' + realTarget);
-    return true;
-  } catch (err) {
-    log('[web-patch] 创建客户端插件链接失败：' + (err && err.message ? err.message : err));
-    return false;
-  }
+  const pkg = bootPreflight.DESKTOP_PLUGINS.find((p) => p.name === '@dsh-desktop/settings-update');
+  if (!pkg) return false;
+  return bootPreflight.ensurePackageLink({ dshHome, appDir, pkg, log });
 }
 
 module.exports = { generateWebPatch, buildPatchRows, renderPatchYaml, resolveNodeExecutable, ensureClientPackageLink, providerEnvKey };
