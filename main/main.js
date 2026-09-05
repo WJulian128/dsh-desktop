@@ -928,8 +928,11 @@ function rpcCall(method, payload, timeoutMs = 10000) {
       if (!rpcAuthWarned) {
         rpcAuthWarned = true;
         logLine('[rpc] 认证 cookie 换取失败：访问带 token 的 URL 未返回 dsh-auth-* cookie' +
-          (state.webUrl ? '（token 可能已随服务重启失效，重启桌面端即可恢复）' : '（旧版 harness 无认证，忽略）'));
+          (state.webUrl ? '（launch token 已静默轮换，尝试自动重启 harness 自愈）' : '（旧版 harness 无认证，忽略）'));
       }
+      // 自愈：token 轮换且无新 URL 打印时，唯一可靠恢复途径是重启 harness
+      // （新进程会在启动早期打印新 token）。有冷却与护栏，不会风暴式重启。
+      maybeAutoRestartForAuth(method);
       return res;
     }
     return attempt(style, argsKey);
@@ -1175,7 +1178,24 @@ function launchHarness(port, withPatch = true) {
     port,
     patches: withPatch && fs.existsSync(PATCH_FILE) ? [PATCH_FILE] : [],
   });
-  harness.on('log', logLine);
+  harness.on('log', (line) => {
+    logLine(line);
+    // 0.1.2-rc.1+：服务可能在运行中重新打印带新 token 的 URL（launch token 静默
+    // 轮换是实测行为）。只要 ready 后打印了新 URL 就同步 state.webUrl 并重铸
+    // cookie，避免 RPC 一直拿旧 token 直到重启。（启动早期的首次打印由
+    // launchHarness 的 start() 与启动冒烟处理，这里不重复动作。）
+    if (line.startsWith('dsh web: ') && state.phase === 'ready') {
+      const fresh = line.slice('dsh web: '.length).trim();
+      if (fresh && fresh !== state.webUrl) {
+        const previous = state.webUrl;
+        state.webUrl = fresh;
+        logLine('[rpc] 检测到新的 dsh web URL，已更新并重铸认证 cookie（旧：' + (previous || '无') + '）');
+        refreshRpcAuth(true).then((ok) => {
+          if (!ok) logLine('[rpc] 新 URL 换取 cookie 失败，将走自动重启自愈：' + fresh);
+        }).catch(() => {});
+      }
+    }
+  });
   harness.on('exit', (code) => {
     if (quitting) return;
     if (state.phase === 'ready') {
@@ -1287,6 +1307,7 @@ async function startHarness() {
     return;
   }
   state.phase = 'ready';
+  bootReadyAt = Date.now(); // 冒烟/认证自愈的时间基准（就绪后 <20s 不触发自动重启）
   broadcastState();
   taskDispatcher.flush(); // 就绪后补发积压的定时任务
   // 0.1.2-rc.1+：必须加载带 token 的完整 URL（页面 303 换取 dsh-auth cookie）；
@@ -1297,6 +1318,35 @@ async function startHarness() {
 
 /** 每轮启动只弹一次回滚询问（防启动失败刷屏）。 */
 let rollbackPrompted = false;
+/** 本次 ready 时刻（认证失效自动重启的时间基准：刚就绪的探测失败不算故障）。 */
+let bootReadyAt = 0;
+/** 认证失效自动重启的冷却（10 分钟内最多一次，防风暴）。 */
+let lastAuthAutoRestartAt = 0;
+
+/**
+ * 认证失效自愈：token 静默轮换且无新 URL 可换 cookie 时，重启 harness 是唯一
+ * 可靠恢复途径（新进程启动早期会打印新 token）。护栏：
+ *   - phase 必须 ready（启动中/更新中/退出中不介入）；
+ *   - 就绪后 20s 内的失败交给启动冒烟处理，不触发；
+ *   - 10 分钟冷却；重启前写 auto-resume（打断进行中回合可自动接续）。
+ */
+function maybeAutoRestartForAuth(method) {
+  if (state.updating || quitting || state.phase !== 'ready') return;
+  if (Date.now() - bootReadyAt < 20000) return; // 冒烟窗口内由 postBootSmoke 兜底
+  if (Date.now() - lastAuthAutoRestartAt < 10 * 60 * 1000) {
+    logLine('[rpc] 认证失效但 10 分钟冷却未到，暂不自动重启（' + method + '）');
+    return;
+  }
+  lastAuthAutoRestartAt = Date.now();
+  logLine('[rpc] ' + method + ' 401 且 cookie 重铸失败（launch token 已轮换），自动重启 harness 自愈');
+  writeAutoResumeIfNeeded('rpc-auth'); // 打断进行中回合时重启后自动接续
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.loadFile(path.join(APP_DIR, 'renderer', 'loading.html'));
+  }
+  startHarness().catch((err) => {
+    logLine('[rpc] 自动重启 harness 失败：' + (err && err.message ? err.message : err));
+  });
+}
 
 async function chooseWorkspaceDialog() {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -1509,7 +1559,7 @@ async function applyUpdate(version, { reason = '更新' } = {}) {
   harness = null;
   // 更新事务标记：安装前写入 in-progress，prev 记录回滚点（进程被杀/半更新时可检测）。
   const guard = upgradeGuard.guardForUpdate({ installed: installedBefore, target });
-  settings.set('updateGuard', guard);
+  settings.set(upgradeGuard.KEYS.UPDATE_GUARD, guard);
   logLine('[updater] ' + reason + '到 v' + target + '（原 v' + (installedBefore || '未知') + '），已停止 harness，updateGuard=in-progress');
   try {
     const runner = resolveNpmRunner();
@@ -1527,7 +1577,7 @@ async function applyUpdate(version, { reason = '更新' } = {}) {
         '\u3002\u8bf7\u7a0d\u540e\u91cd\u8bd5\uff0c\u6216\u624b\u52a8\u6267\u884c npm install @deepseek-ai/dsh@' + target);
     }
     // 安装成功：标记 applied（保留 prev），重启后由启动冒烟验收并清除。
-    settings.set('updateGuard', upgradeGuard.markApplied(guard));
+    settings.set(upgradeGuard.KEYS.UPDATE_GUARD, upgradeGuard.markApplied(guard));
     state.updating = false;
     state.updateProgress = null;
     state.updateAvailable = false;
@@ -1550,8 +1600,8 @@ async function applyUpdate(version, { reason = '更新' } = {}) {
     app.exit(0);
   } catch (err) {
     // 失败：标记 failed（下次启动提示"上次更新未完成，可重试"，不自动重装）
-    const prev = settings.get('updateGuard') || guard;
-    settings.set('updateGuard', {
+    const prev = settings.get(upgradeGuard.KEYS.UPDATE_GUARD) || guard;
+    settings.set(upgradeGuard.KEYS.UPDATE_GUARD, {
       version: prev.version || target, startedAt: prev.startedAt || guard.startedAt,
       prev: prev.prev || guard.prev, status: 'failed',
     });
@@ -1571,7 +1621,7 @@ async function applyUpdate(version, { reason = '更新' } = {}) {
 
 /** 启动时检测上次未完成的更新（updateGuard）：记录日志并提示用户可重试，不自动重装（避免反复失败）。 */
 function checkUpdateGuard() {
-  const guard = settings.get('updateGuard');
+  const guard = settings.get(upgradeGuard.KEYS.UPDATE_GUARD);
   if (!guard || typeof guard.version !== 'string') return;
   const installed = updater.installedVersion(dshInstallDir(), APP_DIR);
   const lastGood = settings.get(upgradeGuard.KEYS.LAST_GOOD);
@@ -1579,14 +1629,14 @@ function checkUpdateGuard() {
   // ok 标记，或 applied 且版本已就位且已通过冒烟：事务实际完成，仅清理残留标记。
   if (guard.status === 'ok' || (guard.status === 'applied' && targetInPlace && lastGood === installed)) {
     logLine('[updater] updateGuard \u72b6\u6001 ' + guard.status + ' \u4f46 v' + installed + ' \u5df2\u5c31\u4f4d\uff0c\u6e05\u9664\u6807\u8bb0');
-    settings.set('updateGuard', null);
+    settings.set(upgradeGuard.KEYS.UPDATE_GUARD, null);
     return;
   }
   if (guard.status === 'applied') {
     // 安装完成、等待启动冒烟验收（ready 后由 postBootSmoke 处理，这里不打扰用户）。
     if (!targetInPlace) {
       logLine('[updater] applied 但版本不符（期望 v' + guard.version + '，实际 v' + installed + '），清除失效事务');
-      settings.set('updateGuard', null);
+      settings.set(upgradeGuard.KEYS.UPDATE_GUARD, null);
       return;
     }
     logLine('[updater] 等待启动冒烟验收 v' + guard.version + (lastGood ? '（上次可用 v' + lastGood + '）' : '（首次记录可用版本）'));
@@ -1640,33 +1690,46 @@ async function smokeHarnessApi() {
 async function postBootSmoke() {
   const installed = updater.installedVersion(dshInstallDir(), APP_DIR);
   const lastGood = settings.get(upgradeGuard.KEYS.LAST_GOOD);
-  const guard = settings.get('updateGuard');
+  const guard = settings.get(upgradeGuard.KEYS.UPDATE_GUARD);
   const sm = await smokeHarnessApi();
   if (sm.ok) {
     settings.set(upgradeGuard.KEYS.LAST_GOOD, installed);
     if (guard && guard.status === 'applied' && guard.version === installed) {
-      settings.set('updateGuard', null);
+      settings.set(upgradeGuard.KEYS.UPDATE_GUARD, null);
     }
     logLine('[upgrade] 冒烟通过（v' + installed + '，' + sm.detail + '），记为可用版本');
     return;
   }
   logLine('[upgrade] 冒烟失败：' + sm.detail + '（v' + installed + '，上次可用 v' + (lastGood || '未知') + '）');
-  const triage = upgradeGuard.triageUpgradeBootFailure({ installed, lastGood, guard });
-  if (!triage.promptRollback || rollbackPrompted) return;
+  const decision = rollbackDecisionNow(installed, lastGood, guard);
+  if (!decision.promptRollback || rollbackPrompted) return;
   rollbackPrompted = true;
-  promptRollback(triage.prev, triage.reason);
+  promptRollback(decision.prev, decision.reason);
+}
+
+/** 回滚提示决策（含“保留当前版本”去重；dismissed 版本变化后自动恢复提示）。 */
+function rollbackDecisionNow(installed, lastGood, guard) {
+  const dismissedVersion = settings.get(upgradeGuard.KEYS.DISMISSED_ROLLBACK) || null;
+  return upgradeGuard.rollbackDecision({ installed, lastGood, guard, dismissedVersion });
 }
 
 /** 提示一键回滚到 prev（applyUpdate 复用同一事务化安装）。 */
 function promptRollback(prev, reason) {
   if (!prev || state.updating) return;
+  const installed = updater.installedVersion(dshInstallDir(), APP_DIR);
   msgBox({
     type: 'warning', title: 'harness 启动/验证异常', noLink: true,
-    message: '当前版本 v' + updater.installedVersion(dshInstallDir(), APP_DIR) + ' 未通过启动验证。',
+    message: '当前版本 v' + installed + ' 未通过启动验证。',
     detail: reason + '。是否回滚到升级前的版本 v' + prev + '？（回滚会停止服务并重新安装，完成后自动重启）',
     buttons: ['回滚到 v' + prev, '保留当前版本'], defaultId: 1, cancelId: 1,
   }).then(({ response }) => {
-    if (response === 0) applyUpdate(prev, { reason: '回滚' });
+    if (response === 0) {
+      applyUpdate(prev, { reason: '回滚' });
+    } else {
+      // 用户明确选择保留：同版本不再重复弹窗（换版本后自动恢复提示）。
+      settings.set(upgradeGuard.KEYS.DISMISSED_ROLLBACK, installed);
+      logLine('[upgrade] 用户选择保留 v' + installed + '，同版本不再提示回滚');
+    }
   }).catch(() => {});
 }
 
@@ -1674,15 +1737,15 @@ function promptRollback(prev, reason) {
 function afterBootFailure(err) {
   try {
     const installed = updater.installedVersion(dshInstallDir(), APP_DIR);
-    const guard = settings.get('updateGuard');
+    const guard = settings.get(upgradeGuard.KEYS.UPDATE_GUARD);
     const lastGood = settings.get(upgradeGuard.KEYS.LAST_GOOD);
     const classified = upgradeGuard.classifyBootFailure((err && err.message) || String(err));
     logLine('[upgrade] 启动失败分类：' + classified.kind + '（' + (classified.hint || '见最近输出') + '）');
     if (classified.kind === 'port-busy') return; // 换端口/重启即可，不打扰
-    const triage = upgradeGuard.triageUpgradeBootFailure({ installed, lastGood, guard });
-    if (!triage.promptRollback || rollbackPrompted) return;
+    const decision = rollbackDecisionNow(installed, lastGood, guard);
+    if (!decision.promptRollback || rollbackPrompted) return;
     rollbackPrompted = true;
-    promptRollback(triage.prev, triage.reason);
+    promptRollback(decision.prev, decision.reason);
   } catch (err2) {
     logLine('[upgrade] 启动失败判定异常（忽略）：' + (err2 && err2.message ? err2.message : err2));
   }
@@ -3764,6 +3827,23 @@ function injectText(text) {
   focusComposerAndPaste();
 }
 
+/** 写入自动接续文件（重启/停服打断进行中回合时用；已有文件不覆盖，幂等）。 */
+function writeAutoResumeIfNeeded(reason) {
+  try {
+    const file = path.join(app.getPath('userData'), 'auto-resume.json');
+    if (fs.existsSync(file)) return false;
+    if (!(sessionIsBusy() || sessionRecentlyActive(10 * 60 * 1000))) return false;
+    fs.writeFileSync(file, JSON.stringify({
+      msg: '\u7ee7\u7eed\u5b8c\u6210\u4e0a\u4e00\u4e2a\u88ab\u4e2d\u65ad\u7684\u4efb\u52a1\uff1a' +
+        (reason === 'rpc-auth' ? 'RPC \u8ba4\u8bc1\u5931\u6548\u81ea\u52a8\u91cd\u542f\u4e86\u670d\u52a1' : '\u684c\u9762\u7aef\u91cd\u542f') +
+        '\u6253\u65ad\u4e86\u6b63\u5728\u8fdb\u884c\u7684\u5de5\u4f5c\uff08\u53ef\u80fd\u5305\u62ec\u60a8\u6b63\u5728\u8f93\u5165\u7684\u5185\u5bb9\uff09\uff0c\u8bf7\u68c0\u67e5\u4e0a\u4e0b\u6587\u540e\u7ee7\u7eed\u5b8c\u6210\u3002',
+      at: Date.now(),
+    }), 'utf8');
+    logLine('[auto-resume] ' + reason + ' \u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u5de5\u4f5c\uff0c\u5df2\u5199\u63a5\u7eed\u6d88\u606f');
+    return true;
+  } catch (err) { /* 忽略 */ return false; }
+}
+
 /** 判断当前会话是否在进行中（最新 transcript 的 turn/start 多于 turn/end）。
  *  进行中提交的消息会进入队列——此时接续任务需走插话（steer）排到队列最前。 */
 function sessionIsBusy() {
@@ -5195,13 +5275,7 @@ async function main() {
 
   // RPC 必须先于 harness 子进程启动：buildChildEnv 需要把地址/令牌注入子进程环境。
   await startRpc();
-  // 启动前自检自愈（startHarness 内也会跑；这里先做一次，保证链接在首启前就绪）：
-  // 让 harness 能解析全部桌面端插件（$DSH_HOME/profiles/node_modules 链接 + 本地依赖）。
-  try {
-    bootPreflight.runBootPreflight({ dshHome: state.dshHome, appDir: APP_DIR, log: logLine });
-  } catch (err) {
-    logLine('[boot-preflight] 自检异常（忽略）：' + (err && err.message ? err.message : err));
-  }
+  // 启动前自检自愈在 startHarness 内部执行（每次启动都会跑），这里不再重复调用。
   await startHarness();
   startScheduler();
   setTimeout(() => { checkUpdates({ manual: false }); }, 5000);
@@ -5226,16 +5300,7 @@ async function main() {
     // 任何原因的重启/退出，只要打断了进行中的回合、或用户最近正在使用（正在输入内容
     // 也算——此时没有进行中回合，sessionIsBusy 会漏判），就写接续消息：
     // 下次启动页面就绪后自动发送，让会话自己继续（无需用户手动接续）。
-    try {
-      const file = path.join(app.getPath('userData'), 'auto-resume.json');
-      if (!fs.existsSync(file) && (sessionIsBusy() || sessionRecentlyActive(10 * 60 * 1000))) {
-        fs.writeFileSync(file, JSON.stringify({
-          msg: '\u7ee7\u7eed\u5b8c\u6210\u4e0a\u4e00\u4e2a\u88ab\u4e2d\u65ad\u7684\u4efb\u52a1\uff1a\u684c\u9762\u7aef\u91cd\u542f\u6253\u65ad\u4e86\u6b63\u5728\u8fdb\u884c\u7684\u5de5\u4f5c\uff08\u53ef\u80fd\u5305\u62ec\u60a8\u6b63\u5728\u8f93\u5165\u7684\u5185\u5bb9\uff09\uff0c\u8bf7\u68c0\u67e5\u4e0a\u4e0b\u6587\u540e\u7ee7\u7eed\u5b8c\u6210\u3002',
-          at: Date.now(),
-        }), 'utf8');
-        logLine('[auto-resume] \u9000\u51fa\u65f6\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u5de5\u4f5c\uff0c\u5df2\u5199\u63a5\u7eed\u6d88\u606f');
-      }
-    } catch (err) { /* 忽略 */ }
+    writeAutoResumeIfNeeded('quit');
   });
   app.on('will-quit', (event) => {
     const stop = async () => {

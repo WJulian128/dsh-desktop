@@ -117,5 +117,33 @@ check('classify：未知错误 → other（不吓唬用户）', () => {
   assert.strictEqual(c.kind, 'other');
 });
 
+/* ---- rollbackDecision（用户“保留当前版本”去重） ---- */
+function appliedGuard() {
+  return guard.markApplied(guard.guardForUpdate({ installed: '0.1.1-rc.2', target: '0.1.2-rc.1' }));
+}
+
+check('rollbackDecision：未 dismissed 时正常提示回滚', () => {
+  const d = guard.rollbackDecision({ installed: '0.1.2-rc.1', lastGood: '0.1.1-rc.2', guard: appliedGuard(), dismissedVersion: null });
+  assert.strictEqual(d.promptRollback, true);
+  assert.strictEqual(d.dismissed, false);
+  assert.strictEqual(d.prev, '0.1.1-rc.2');
+});
+
+check('rollbackDecision：用户保留过当前版本 → 不再提示（dismissed=true）', () => {
+  const d = guard.rollbackDecision({ installed: '0.1.2-rc.1', lastGood: '0.1.1-rc.2', guard: appliedGuard(), dismissedVersion: '0.1.2-rc.1' });
+  assert.strictEqual(d.dismissed, true);
+  assert.strictEqual(d.promptRollback, false);
+});
+
+check('rollbackDecision：版本已变化（下次升级）→ 自动恢复提示', () => {
+  const d = guard.rollbackDecision({ installed: '0.1.3', lastGood: '0.1.2-rc.1', guard: null, dismissedVersion: '0.1.2-rc.1' });
+  assert.strictEqual(d.dismissed, false); // dismissed 记录的是旧版本，不再压制
+});
+
+check('rollbackDecision：普通失败（无事务）不受 dismissed 影响', () => {
+  const d = guard.rollbackDecision({ installed: '0.1.2-rc.1', lastGood: '0.1.2-rc.1', guard: null, dismissedVersion: '0.1.2-rc.1' });
+  assert.strictEqual(d.promptRollback, false);
+});
+
 console.log('---- summary: ' + pass + '/' + (pass + fail) + ' passed ----');
 process.exit(fail > 0 ? 1 : 0);

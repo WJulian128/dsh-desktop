@@ -22,6 +22,8 @@
 const KEYS = {
   UPDATE_GUARD: 'updateGuard',
   LAST_GOOD: 'lastKnownGoodVersion',
+  /** 用户对“当前版本升级失败”选择过“保留当前版本”：同版本不再重复弹回滚框。 */
+  DISMISSED_ROLLBACK: 'dismissRollbackVersion',
 };
 
 /**
@@ -74,6 +76,22 @@ function triageUpgradeBootFailure({ installed, lastGood, guard }) {
   };
 }
 
+/**
+ * 回滚提示的最终决策（含用户“保留当前版本”去重）。
+ * dismissedVersion = 用户上次明确选择“保留”时的版本；installed 仍等于它则不再
+ * 提示（避免每次重启都骚扰），换版本后自动恢复提示。
+ * @returns {{newVersion:boolean, prev:string|null, promptRollback:boolean, dismissed:boolean, reason:string}}
+ */
+function rollbackDecision({ installed, lastGood, guard, dismissedVersion }) {
+  const triage = triageUpgradeBootFailure({ installed, lastGood, guard });
+  const dismissed = !!dismissedVersion && dismissedVersion === installed;
+  return {
+    ...triage,
+    dismissed,
+    promptRollback: triage.promptRollback && !dismissed,
+  };
+}
+
 /** 启动失败文本 → 分类与处理建议（供日志与错误页提示）。 */
 function classifyBootFailure(text) {
   const haystack = String(text || '').toLowerCase();
@@ -102,5 +120,6 @@ module.exports = {
   markApplied,
   shouldSmoke,
   triageUpgradeBootFailure,
+  rollbackDecision,
   classifyBootFailure,
 };
