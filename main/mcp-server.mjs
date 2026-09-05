@@ -151,6 +151,154 @@ server.registerTool(
   },
 );
 
+/* ---- Office 工具（文件级 office-docx + Word/WPS COM 应用通道） ---- */
+
+server.registerTool(
+  "dsh_desktop_office_detect",
+  {
+    title: "检测办公软件环境",
+    description:
+      "检测本机 Office 环境（MS Office / WPS 的 Word、Excel 路径与 COM 可用性），返回各应用的可用状态。调用任何 word_* / docx / xlsx 工具前建议先检测。",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const r = await call("office", { op: "detect" });
+    if (!r || r.ok !== true) return text("检测失败：" + ((r && r.error) || "未知错误"));
+    const d = r.data || {};
+    return text("办公软件环境：\n- Word：" + (d.word && d.word.available ? "可用（" + (d.word.kind || "?") + "）" : "未安装/未检测到") +
+      "\n- Excel：" + (d.excel && d.excel.available ? "可用（" + (d.excel.kind || "?") + "）" : "未安装/未检测到") +
+      "\n- PowerShell：" + (d.ps ? "可用" : "不可用"));
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_docx_read",
+  {
+    title: "读取 Word 文档（.docx）",
+    description:
+      "读取 .docx 文件的全部文字内容（含表格文字），返回纯文本供分析/改写。附件中的 Word 文档先找到其本地路径（.dsh-attachments 或工作区）再调用。",
+    inputSchema: z.object({
+      path: z.string().describe(".docx 文件绝对路径"),
+    }),
+  },
+  async (args) => {
+    const r = await call("office", { op: "docxRead", args });
+    if (!r || r.ok !== true) return text("读取失败：" + ((r && r.error) || "未知错误"));
+    return text("文档内容（" + (r.data && r.data.text ? r.data.text.length : 0) + " 字符）：\n" + (r.data ? r.data.text : ""));
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_docx_from_markdown",
+  {
+    title: "生成 Word 文档（markdown → .docx）",
+    description:
+      "把 markdown 文本保存为 .docx 文件（支持 # 标题 / - 与数字列表 / > 引用 / ```代码块 / | 表格 / **粗体** / *斜体* / `行内代码`）。适合把报告、纪要、方案等写作产出落成 Word 文件。outPath 建议写到当前工作区或 .dsh-attachments 目录。",
+    inputSchema: z.object({
+      text: z.string().describe("markdown 全文"),
+      outPath: z.string().describe("输出 .docx 绝对路径（如 C:\\Users\\wj021\\Desktop\\报告.docx）"),
+      title: z.string().optional().describe("可选：文档大标题"),
+    }),
+  },
+  async (args) => {
+    const r = await call("office", { op: "mdToDocx", args });
+    if (!r || r.ok !== true) return text("生成失败：" + ((r && r.error) || "未知错误"));
+    return text("已生成 Word 文档：\n" + (r.data && r.data.path ? r.data.path : ""));
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_xlsx_read",
+  {
+    title: "读取 Excel 表格（.xlsx）",
+    description:
+      "读取 .xlsx 指定工作表（缺省第一个）为二维表格文本（首行一般是表头）。sheet 缺省时返回工作表名列表。",
+    inputSchema: z.object({
+      path: z.string().describe(".xlsx 文件绝对路径"),
+      sheet: z.string().optional().describe("工作表名；缺省第一个工作表"),
+    }),
+  },
+  async (args) => {
+    const r = await call("office", { op: "xlsxRead", args });
+    if (!r || r.ok !== true) return text("读取失败：" + ((r && r.error) || "未知错误"));
+    const d = r.data || {};
+    const head = "工作表：" + d.sheetName + "（可选：" + ((d.sheetNames || []).join(", ") || "—") + "）\n";
+    const rows = (d.rows || []).map((row) => (row || []).map((c) => (c === null || c === undefined ? "" : String(c))).join("\t")).join("\n");
+    return text(head + (rows || "（空表）"));
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_xlsx_write",
+  {
+    title: "生成 Excel 表格（.xlsx）",
+    description:
+      "把二维数据写成 .xlsx 文件（可含多个工作表；每张表首行通常为表头）。适合把统计结果、清单、台账落成 Excel。",
+    inputSchema: z.object({
+      path: z.string().describe("输出 .xlsx 绝对路径"),
+      sheets: z.array(z.object({
+        name: z.string().optional().describe("工作表名（缺省 Sheet1）"),
+        rows: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe("二维数据：每行一组值，首行通常为表头"),
+      })).describe("工作表列表（至少一个）"),
+    }),
+  },
+  async (args) => {
+    const r = await call("office", { op: "xlsxWrite", args });
+    if (!r || r.ok !== true) return text("生成失败：" + ((r && r.error) || "未知错误"));
+    return text("已生成 Excel 文件：\n" + (r.data && r.data.path ? r.data.path : ""));
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_word_export_pdf",
+  {
+    title: "Word 导出 PDF",
+    description:
+      "用本机 Word（COM 自动化，需已安装 MS Office/WPS）把 .docx 打开并另存为 PDF——排版、字体、分页与 Word 完全一致。Word 首次启动可能耗时 5~20 秒，请耐心等待。",
+    inputSchema: z.object({
+      docxPath: z.string().describe("源 .docx 绝对路径"),
+      pdfPath: z.string().optional().describe("输出 .pdf 绝对路径（缺省与 docx 同目录同名）"),
+    }),
+  },
+  async (args) => {
+    const r = await call("office", { op: "wordExportPdf", args });
+    if (!r || r.ok !== true) return text("导出失败：" + ((r && r.error) || "未知错误"));
+    return text("导出完成" + (r.data && r.data.ok ? "（已用 Word 另存为 PDF）" : ""));
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_word_open",
+  {
+    title: "用 Word 打开文档",
+    description:
+      "在 Word 中打开指定 .docx 供用户查看/编辑（应用窗口会显示）。若需要后续操控窗口（另存、打印等），结合电脑操控的窗口/键盘工具操作。",
+    inputSchema: z.object({
+      docxPath: z.string().describe(".docx 文件绝对路径"),
+    }),
+  },
+  async (args) => {
+    const r = await call("office", { op: "wordOpen", args });
+    if (!r || r.ok !== true) return text("打开失败：" + ((r && r.error) || "未知错误"));
+    return text("已在 Word 中打开：" + (args && args.docxPath ? args.docxPath : ""));
+  },
+);
+
+server.registerTool(
+  "dsh_desktop_office_verify",
+  {
+    title: "验证 Word COM 自动化可用",
+    description:
+      "真实创建 Word.Application 验证 COM 自动化可用（首次约数秒，会短暂静默启动 Word）。若失败说明未安装 MS Office/WPS 或 COM 被禁用，word_* 系列工具不可用。",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const r = await call("office", { op: "wordVerify" });
+    if (!r || r.ok !== true) return text("验证失败：" + ((r && r.error) || "未知错误"));
+    return text(r.data && r.data.ok ? "Word COM 自动化可用（版本 " + (r.data.version || "?") + "）" : "Word COM 不可用：" + ((r.data && r.data.error) || "未知错误"));
+  },
+);
+
 server.registerTool(
   "dsh_desktop_open_folder",
   {

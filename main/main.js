@@ -27,6 +27,8 @@ const { QqGateway } = require('./bot-gateway/qq-gateway');
 const { wechatPush, formatReplyMarkdown } = require('./bot-gateway/wechat-push');
 const { ReplyBridge, extractReplyAfter } = require('./bot-gateway/reply-bridge');
 const { generateImage } = require('./image-gen');
+const officeDocx = require('./office-docx');
+const officeCom = require('./office-com');
 const { inQuietHours } = require('./quiet-hours');
 const memoryStore = require('./memory-store');
 const { startAutoMemory } = require('./memory-watch');
@@ -1963,6 +1965,74 @@ function startRpc() {
     fs.mkdirSync(logDir, { recursive: true });
     shell.openPath(logDir);
     return { path: logDir };
+  });
+  // Office 文件级 + 应用通道（MCP 工具 dsh_desktop_office_*/docx_*/xlsx_*/word_*）。
+  // 路径参数必须是字符串；文件级函数抛错统一转 { ok:false, error }。
+  rpc.on('office', async (params) => {
+    const p = params || {};
+    const op = String(p.op || '');
+    const arg = p.args && typeof p.args === 'object' ? p.args : {};
+    const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+    try {
+      switch (op) {
+        case 'detect': {
+          const data = await officeCom.detectOffice();
+          return { ok: true, data };
+        }
+        case 'wordVerify': {
+          const data = await officeCom.verifyWordCom();
+          return { ok: true, data };
+        }
+        case 'docxRead': {
+          const path = str(arg.path);
+          if (!path) throw new Error('缺少 path');
+          const text = await officeDocx.readDocxText(path);
+          return { ok: true, data: { text } };
+        }
+        case 'mdToDocx': {
+          const text = typeof arg.text === 'string' ? arg.text : null;
+          const outPath = str(arg.outPath);
+          const title = typeof arg.title === 'string' && arg.title.trim() ? arg.title.trim() : undefined;
+          if (!text || !outPath) throw new Error('需要 text（markdown 内容）与 outPath');
+          const written = await officeDocx.markdownToDocx(text, outPath, { title });
+          return { ok: true, data: { path: written } };
+        }
+        case 'xlsxRead': {
+          const path = str(arg.path);
+          const sheet = str(arg.sheet) || undefined;
+          if (!path) throw new Error('缺少 path');
+          const data = await officeDocx.readXlsx(path, sheet);
+          return { ok: true, data };
+        }
+        case 'xlsxWrite': {
+          const path = str(arg.path);
+          if (!path) throw new Error('缺少 path');
+          const sheets = Array.isArray(arg.sheets) ? arg.sheets : null;
+          if (!sheets) throw new Error('需要 sheets（[{name?, rows}]）');
+          const written = await officeDocx.writeXlsx(path, { sheets });
+          return { ok: true, data: { path: written } };
+        }
+        case 'wordExportPdf': {
+          const docxPath = str(arg.docxPath);
+          if (!docxPath) throw new Error('缺少 docxPath');
+          // 缺省输出：与 docx 同目录同名 .pdf
+          let pdfPath = str(arg.pdfPath);
+          if (!pdfPath) pdfPath = docxPath.replace(/\.docx$/i, '.pdf') || docxPath + '.pdf';
+          const data = await officeCom.exportDocxToPdf({ docxPath, pdfPath });
+          return { ok: true, data };
+        }
+        case 'wordOpen': {
+          const docxPath = str(arg.docxPath);
+          if (!docxPath) throw new Error('缺少 docxPath');
+          const data = await officeCom.openInWord({ docxPath });
+          return { ok: true, data };
+        }
+        default:
+          return { ok: false, error: '未知 office 操作：' + op };
+      }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    }
   });
   rpc.on('openTerminal', async () => {
     openHeadlessWindow();
