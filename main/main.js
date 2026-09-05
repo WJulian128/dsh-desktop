@@ -1215,8 +1215,13 @@ function launchHarness(port, withPatch = true) {
   });
 }
 
-async function startHarness() {
-  if (state.updating) {
+/**
+ * 启动（或重启）harness 服务。opts.allowDuringUpdate=true 供更新流水线在
+ * updating 状态下加载新版本；opts.skipBootSmoke=true 时跳过自动冒烟
+ * （由更新流水线统一 await 冒烟）。
+ */
+async function startHarness(opts = {}) {
+  if (state.updating && !opts.allowDuringUpdate) {
     logLine('[main] 正在更新 harness，忽略启动请求');
     return;
   }
@@ -1313,7 +1318,7 @@ async function startHarness() {
   // 0.1.2-rc.1+：必须加载带 token 的完整 URL（页面 303 换取 dsh-auth cookie）；
   // 旧版本无 token 时 state.webUrl 与 state.url 相同，行为不变。
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(state.webUrl || state.url);
-  scheduleBootSmoke(); // 就绪后异步冒烟：认证 + 核心 RPC + 版本簿记（升级防护）
+  if (!opts.skipBootSmoke) scheduleBootSmoke(); // 就绪后异步冒烟：认证 + 核心 RPC + 版本簿记（升级防护）
 }
 
 /** 每轮启动只弹一次回滚询问（防启动失败刷屏）。 */
@@ -1477,7 +1482,7 @@ async function promptUpdate(res) {
     buttons: ['\u7acb\u5373\u66f4\u65b0', '\u7a0d\u540e'], defaultId: 0, cancelId: 1,
   });
   if (response === 0) {
-    applyUpdate(res.latest);
+    applyUpdate(res.latest, { userInitiated: true });
     return true;
   }
   return false;
@@ -1526,17 +1531,21 @@ function ensurePackagedDshDir() {
 }
 
 /**
- * 执行一次 dsh 版本安装（更新或回滚），带升级防护：
- *  1. 先停掉正在运行的 harness 再 npm install——npm 会重写 node_modules，
- *     运行中的 harness 会读到半更新依赖直接崩溃（0.1.2-rc.1 起插件树失败=致命，
- *     2026-09 升级事故根因），并污染后续启动；
- *  2. 安装前把当前版本记入 updateGuard.prev（回滚依据，保留到启动冒烟通过）；
- *  3. 安装成功后 status=applied（不清除），由重启后的“启动冒烟”验收并清除——
- *     冒烟 = 认证 cookie 换取 + session/list 核心 RPC；失败可一键回滚到 prev。
+ * 后台自动更新流水线（用户无感：界面只显示"更新中…"，过程无弹窗打扰）：
+ *
+ *   预检（拉官方变更摘要）→ 停服 → 安装 → 校验 → 自动启动新版本 → 冒烟验收。
+ *   自动决策（熔断：回滚最多一次）：
+ *     - 安装失败 → 若存在 prev 自动回滚到 prev；
+ *     - 新版本冒烟未通过 → 自动回滚到 prev（prev 版本冒烟同样验收）；
+ *     - 无 prev 或回滚也失败 → 停止自动处理并给出可读结果。
+ *   全程不打断用户：进行中的回合由 auto-resume 机制在服务恢复后自动接续。
+ *   结果呈现：系统通知 +（用户手动触发时）一次结果弹窗（含官方变更摘要）。
+ *
  * @param {string} [version] 目标版本（缺省取 state.latest）
- * @param {{reason?: string}} [opts] reason='回滚' 时文案与标题切换
+ * @param {{reason?: string, silent?: boolean, userInitiated?: boolean}} [opts]
+ *   reason='回滚' 用于手动回滚；userInitiated=true 时结束后弹结果窗（否则仅通知）。
  */
-async function applyUpdate(version, { reason = '更新' } = {}) {
+async function applyUpdate(version, { reason = '更新', silent = true, userInitiated = false } = {}) {
   if (state.updating) return;
   const target = version || state.latest;
   if (!target) return;
@@ -1544,78 +1553,180 @@ async function applyUpdate(version, { reason = '更新' } = {}) {
   const installedBefore = updater.installedVersion(dshInstallDir(), APP_DIR);
   state.updating = true;
   state.phase = 'updating';
-  state.updateProgress = { stage: 'stop', text: '正在停止当前服务…' };
+  state.updateProgress = { stage: 'precheck', text: '正在准备更新…' };
   state.error = null;
   broadcastState();
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.loadFile(path.join(APP_DIR, 'renderer', 'loading.html'));
+    mainWindow.loadFile(path.join(APP_DIR, 'renderer', 'loading.html')); // 只显示"更新中"
   }
-  // 停服安装（防“半更新依赖崩溃循环”）：安装期间不重启 harness。
-  if (harness) {
-    try { await harness.stop(); } catch (err) {
-      logLine('[updater] 停止 harness 失败（忽略，继续安装）：' + (err && err.message ? err.message : err));
-    }
-  }
-  harness = null;
-  // 更新事务标记：安装前写入 in-progress，prev 记录回滚点（进程被杀/半更新时可检测）。
-  const guard = upgradeGuard.guardForUpdate({ installed: installedBefore, target });
-  settings.set(upgradeGuard.KEYS.UPDATE_GUARD, guard);
-  logLine('[updater] ' + reason + '到 v' + target + '（原 v' + (installedBefore || '未知') + '），已停止 harness，updateGuard=in-progress');
-  try {
-    const runner = resolveNpmRunner();
-    state.updateProgress = { stage: 'install', text: isRollback ? '正在回滚安装…' : '正在下载并安装更新…' };
+  const log = (m) => logLine('[updater] ' + m);
+  // 变更摘要提前拉取（失败不影响流程），结束提示时展示。
+  const notesPromise = silent
+    ? updater.fetchReleaseNotes(target).catch(() => '')
+    : Promise.resolve('');
+
+  /** 单次"停服 + 安装 + 版本校验"（更新与回滚共用，事务化）。 */
+  const installOnce = async (ver, label) => {
+    state.updateProgress = { stage: 'stop', text: label === '回滚' ? '正在停止服务以回滚…' : '正在停止当前服务…' };
     broadcastState();
-    await updater.applyUpdate(dshInstallDir(), target, runner, (text) => {
-      state.updateProgress.text = text;
+    // 停服安装：npm 重写 node_modules 期间绝不允许 harness 存活（升级事故根因）。
+    if (harness) {
+      try { await harness.stop(); } catch (err) {
+        log('停止 harness 失败（忽略，继续安装）：' + (err && err.message ? err.message : err));
+      }
+    }
+    harness = null;
+    const guard = upgradeGuard.guardForUpdate({ installed: updater.installedVersion(dshInstallDir(), APP_DIR), target: ver });
+    settings.set(upgradeGuard.KEYS.UPDATE_GUARD, guard);
+    log((label === '回滚' ? '回滚到 v' : '更新到 v') + ver + '（原 v' + (guard.prev || '未知') + '，updateGuard=in-progress）');
+    try {
+      const runner = resolveNpmRunner();
+      state.updateProgress = { stage: 'install', text: label === '回滚' ? '正在回滚安装…' : '正在下载并安装更新…' };
       broadcastState();
-    });
-    // 安装后校验：版本必须与目标一致，否则视为失败（提示重试，不盲目重启）。
-    // updater 内部已做同样校验并回滚 package.json，这里是含内置副本的兜底校验。
-    const installedNow = updater.installedVersion(dshInstallDir(), APP_DIR);
-    if (installedNow !== target) {
-      throw new Error('\u5b89\u88c5\u540e\u7248\u672c\u6821\u9a8c\u5931\u8d25\uff1a\u671f\u671b v' + target + '\uff0c\u5b9e\u9645 v' + installedNow +
-        '\u3002\u8bf7\u7a0d\u540e\u91cd\u8bd5\uff0c\u6216\u624b\u52a8\u6267\u884c npm install @deepseek-ai/dsh@' + target);
+      await updater.applyUpdate(dshInstallDir(), ver, runner, (text) => {
+        state.updateProgress.text = text;
+        broadcastState();
+      });
+      // 安装后校验：版本必须与目标一致（updater 内部已回滚 package.json，这里是兜底）。
+      const installedNow = updater.installedVersion(dshInstallDir(), APP_DIR);
+      if (installedNow !== ver) {
+        throw new Error('安装后版本校验失败：期望 v' + ver + '，实际 v' + installedNow
+          + '。可稍后重试，或手动执行 npm install @deepseek-ai/dsh@' + ver);
+      }
+      settings.set(upgradeGuard.KEYS.UPDATE_GUARD, upgradeGuard.markApplied(guard));
+      return { ok: true, guard };
+    } catch (err) {
+      const prev = settings.get(upgradeGuard.KEYS.UPDATE_GUARD) || guard;
+      settings.set(upgradeGuard.KEYS.UPDATE_GUARD, {
+        version: prev.version || ver, startedAt: prev.startedAt || guard.startedAt,
+        prev: prev.prev || guard.prev, status: 'failed',
+      });
+      log((label === '回滚' ? '回滚' : '更新') + '失败：' + (err && err.message ? err.message : err));
+      return { ok: false, guard, error: (err && err.message) || String(err) };
     }
-    // 安装成功：标记 applied（保留 prev），重启后由启动冒烟验收并清除。
-    settings.set(upgradeGuard.KEYS.UPDATE_GUARD, upgradeGuard.markApplied(guard));
-    state.updating = false;
-    state.updateProgress = null;
-    state.updateAvailable = false;
-    broadcastState();
-    let detail = isRollback
-      ? '已回滚到 v' + target + '，应用将立即重启以加载该版本。'
-      : '应用将立即重启以加载新版本；启动后会自动验证核心 API，验证失败可一键回滚到 v' + (installedBefore || '上一版本') + '。';
-    if (!app.isPackaged && isRollback) {
-      // 开发模式：代码与 dsh 同仓演进，回滚只改 dsh 依赖行；如需连代码一起回退请用 git。
-      detail += '\n\n（开发模式提示：若需要连桌面端代码一起回退，请恢复 git 的 package.json/package-lock.json 后重新 npm install。）';
-    }
-    await msgBox({
-      type: 'info', title: isRollback ? '回滚完成' : '更新完成', noLink: true, buttons: ['立即重启'],
-      message: isRollback ? 'harness 已回滚到 v' + target : 'harness 已更新到 v' + target,
-      detail,
-    });
-    quitting = true;
-    if (harness) await harness.stop().catch(() => {});
-    app.relaunch();
-    app.exit(0);
-  } catch (err) {
-    // 失败：标记 failed（下次启动提示"上次更新未完成，可重试"，不自动重装）
-    const prev = settings.get(upgradeGuard.KEYS.UPDATE_GUARD) || guard;
-    settings.set(upgradeGuard.KEYS.UPDATE_GUARD, {
-      version: prev.version || target, startedAt: prev.startedAt || guard.startedAt,
-      prev: prev.prev || guard.prev, status: 'failed',
-    });
-    logLine('[updater] ' + reason + '失败：' + (err && err.message ? err.message : err));
-    state.updating = false;
-    state.updateProgress = null;
-    broadcastState();
-    dialog.showErrorBox((isRollback ? '回滚失败' : '更新失败'), err && err.message ? err.message : String(err));
-    // 恢复服务：当前安装的版本仍可用（失败时 updater 已回滚 package.json）。
+  };
+
+  /** 以 installed 版本启动服务并等待冒烟验收（skipBootSmoke：由本流水线统一冒烟）。 */
+  const bootAndSmoke = async () => {
     state.phase = 'starting';
     broadcastState();
-    startHarness().catch((e) => {
-      logLine('[updater] 恢复 harness 失败：' + (e && e.message ? e.message : e));
-    });
+    await startHarness({ allowDuringUpdate: true, skipBootSmoke: true });
+    return postBootSmoke(); // { ok, detail, installed }
+  };
+
+  // ---- 主编排（线性 + 单次回滚熔断）----
+  let outcome = null; // {kind, version, error?, failDetail?, smoke?}
+  try {
+    const first = await installOnce(target, isRollback ? '回滚' : '更新');
+    if (!first.ok) {
+      const fallback = first.guard && first.guard.prev && first.guard.prev !== target ? first.guard.prev : null;
+      if (!isRollback && fallback) {
+        log('安装失败，自动回滚到 v' + fallback + '：' + first.error);
+        state.updateProgress = { stage: 'rollback', text: '更新失败，正在自动回滚…' };
+        broadcastState();
+        const back = await installOnce(fallback, '回滚');
+        if (back.ok) {
+          const smoke = await bootAndSmoke();
+          outcome = { kind: 'rolledback', version: fallback, failDetail: first.error, smoke };
+        } else {
+          outcome = { kind: 'failed', version: fallback, error: '更新失败（' + first.error + '）且自动回滚也失败：' + back.error };
+        }
+      } else {
+        outcome = { kind: 'failed', error: first.error };
+      }
+    } else {
+      let smoke = { ok: false, detail: '' };
+      try {
+        smoke = await bootAndSmoke();
+      } catch (err) {
+        smoke = { ok: false, detail: '服务启动失败：' + (err && err.message ? err.message : err) };
+      }
+      if (smoke.ok) {
+        outcome = { kind: isRollback ? 'rolledback' : 'updated', version: target, smoke };
+      } else if (!isRollback && first.guard.prev && first.guard.prev !== target) {
+        log('v' + target + ' 冒烟未通过（' + smoke.detail + '），自动回滚到 v' + first.guard.prev);
+        state.updateProgress = { stage: 'rollback', text: '新版本验证未通过，正在自动回滚…' };
+        broadcastState();
+        const back = await installOnce(first.guard.prev, '回滚');
+        if (back.ok) {
+          let smoke2 = { ok: false, detail: '' };
+          try { smoke2 = await bootAndSmoke(); } catch (err) {
+            smoke2 = { ok: false, detail: '服务启动失败：' + (err && err.message ? err.message : err) };
+          }
+          outcome = { kind: 'rolledback', version: first.guard.prev, failDetail: 'v' + target + ' 验证未通过：' + smoke.detail, smoke: smoke2 };
+        } else {
+          outcome = { kind: 'failed', error: 'v' + target + ' 验证未通过（' + smoke.detail + '）且自动回滚失败：' + back.error };
+        }
+      } else {
+        // 无 prev 可回滚（或本身就是回滚动作且失败）：保留当前版本继续用。
+        outcome = { kind: 'degraded', version: target, smoke };
+      }
+    }
+  } catch (err) {
+    outcome = { kind: 'failed', error: (err && err.message) || String(err) };
+  }
+
+  // ---- 收尾：状态复位 + 恢复服务（失败路径）+ 结果呈现 ----
+  state.updating = false;
+  state.updateProgress = null;
+  if (outcome.kind === 'updated' || outcome.kind === 'rolledback' || outcome.kind === 'degraded') {
+    state.updateAvailable = false;
+  }
+  broadcastState();
+  if (outcome.kind === 'failed' && !harness) {
+    // 安装失败且未回滚成功：恢复当前版本服务，用户可继续使用。
+    log('恢复当前版本服务…');
+    try { await startHarness(); } catch (err) {
+      log('恢复 harness 失败：' + (err && err.message ? err.message : err));
+    }
+  }
+  const notes = await notesPromise;
+  await presentUpdateOutcome(outcome, {
+    notes, userInitiated, installedBefore, isRollback,
+    devHint: !app.isPackaged && isRollback,
+  });
+}
+
+/**
+ * 更新/回滚结果的唯一用户可见出口：系统通知 +（手动触发时）一次结果弹窗。
+ * outcome.kind：updated / rolledback / degraded / failed。
+ */
+async function presentUpdateOutcome(outcome, { notes, userInitiated, installedBefore, isRollback, devHint }) {
+  if (!outcome) return;
+  const kind = outcome.kind;
+  const version = outcome.version || '';
+  const smokeDetail = outcome.smoke && outcome.smoke.detail ? '（' + outcome.smoke.detail + '）' : '';
+  let type = 'info';
+  let title = '更新完成';
+  let message = '';
+  let detail = '';
+  if (kind === 'updated') {
+    message = 'harness 已更新到 v' + version;
+    detail = '后台安装与自动验证（认证 + 核心 API）已通过' + smokeDetail + '。' + (notes ? '\n\n本次更新内容：\n' + notes : '');
+  } else if (kind === 'rolledback') {
+    type = 'warning';
+    title = '更新未通过，已自动回滚';
+    message = '已自动回滚到升级前的 v' + version;
+    detail = (outcome.failDetail ? outcome.failDetail + '\n\n' : '')
+      + '自动回滚完成' + (outcome.smoke && outcome.smoke.ok ? '，v' + version + ' 验证通过。' : '，但 v' + version + ' 的验证也未通过' + smokeDetail + '。')
+      + (devHint ? '\n\n（开发模式提示：若需要连桌面端代码一起回退，请恢复 git 的 package.json/package-lock.json 后重新 npm install。）' : '');
+  } else if (kind === 'degraded') {
+    type = 'warning';
+    title = '验证未通过，已保留当前版本';
+    message = '当前版本 v' + version + ' 未能通过自动验证';
+    detail = (outcome.smoke ? outcome.smoke.detail : '') + '\n\n没有可自动回滚的上一版本；服务已照常启动，可继续使用。';
+  } else {
+    type = 'error';
+    title = isRollback ? '回滚失败' : '更新失败';
+    message = isRollback ? '未能回滚到 v' + version : '未能完成更新';
+    detail = (outcome.error || '未知错误') + '\n\n已恢复当前版本的服务，可稍后重试。详细日志见 dsh-web.log。';
+  }
+  log('结果：' + title + ' —— ' + message + (detail ? '\n' + detail.split('\n').slice(0, 6).join('\n') : ''));
+  try {
+    showNotification({ title, body: message + (detail ? '\n' + detail.split('\n').slice(0, 3).join('\n') : '') });
+  } catch (err) { /* 通知失败不影响结果呈现 */ }
+  if (userInitiated && mainWindow && !mainWindow.isDestroyed()) {
+    await msgBox({ type, title, noLink: true, buttons: ['知道了'], defaultId: 0, cancelId: 0, message, detail }).catch(() => {});
   }
 }
 
@@ -1652,7 +1763,7 @@ function checkUpdateGuard() {
       '\u3002\u4e0d\u4f1a\u81ea\u52a8\u91cd\u88c5\uff0c\u53ef\u7a0d\u540e\u624b\u52a8\u91cd\u8bd5\u66f4\u65b0\u3002',
     buttons: ['\u91cd\u8bd5\u66f4\u65b0', '\u7a0d\u540e'], defaultId: 1, cancelId: 1,
   }).then(({ response }) => {
-    if (response === 0) applyUpdate(guard.version);
+    if (response === 0) applyUpdate(guard.version, { userInitiated: true });
   }).catch(() => {});
 }
 
@@ -1686,7 +1797,7 @@ async function smokeHarnessApi() {
   }
 }
 
-/** 就绪后的异步冒烟 + 版本簿记（升级防护核心）。 */
+/** 就绪后的异步冒烟 + 版本簿记（升级防护核心）。返回 {ok, detail, installed}。 */
 async function postBootSmoke() {
   const installed = updater.installedVersion(dshInstallDir(), APP_DIR);
   const lastGood = settings.get(upgradeGuard.KEYS.LAST_GOOD);
@@ -1698,13 +1809,17 @@ async function postBootSmoke() {
       settings.set(upgradeGuard.KEYS.UPDATE_GUARD, null);
     }
     logLine('[upgrade] 冒烟通过（v' + installed + '，' + sm.detail + '），记为可用版本');
-    return;
+    return { ok: true, detail: sm.detail, installed };
   }
   logLine('[upgrade] 冒烟失败：' + sm.detail + '（v' + installed + '，上次可用 v' + (lastGood || '未知') + '）');
   const decision = rollbackDecisionNow(installed, lastGood, guard);
-  if (!decision.promptRollback || rollbackPrompted) return;
-  rollbackPrompted = true;
-  promptRollback(decision.prev, decision.reason);
+  if (decision.promptRollback && !rollbackPrompted) {
+    rollbackPrompted = true;
+    // 非更新流水线上下文（无 state.updating）才弹人工确认；流水线内由
+    // applyUpdate 自行决策自动回滚，不弹框。
+    if (!state.updating) promptRollback(decision.prev, decision.reason);
+  }
+  return { ok: false, detail: sm.detail, installed };
 }
 
 /** 回滚提示决策（含“保留当前版本”去重；dismissed 版本变化后自动恢复提示）。 */
@@ -1724,7 +1839,7 @@ function promptRollback(prev, reason) {
     buttons: ['回滚到 v' + prev, '保留当前版本'], defaultId: 1, cancelId: 1,
   }).then(({ response }) => {
     if (response === 0) {
-      applyUpdate(prev, { reason: '回滚' });
+      applyUpdate(prev, { reason: '回滚', userInitiated: true });
     } else {
       // 用户明确选择保留：同版本不再重复弹窗（换版本后自动恢复提示）。
       settings.set(upgradeGuard.KEYS.DISMISSED_ROLLBACK, installed);
@@ -1823,8 +1938,19 @@ function startRpc() {
     broadcastState();
     return { installed: res.installed, latest: res.latest, hasUpdate: res.hasUpdate };
   });
-  rpc.on('applyUpdate', async () => {
-    if (!state.updateAvailable || !state.latest) return { applied: false, reason: 'no update available' };
+  rpc.on('applyUpdate', async (params) => {
+    const force = !!(params && params.force);
+    if (!force && (!state.updateAvailable || !state.latest)) return { applied: false, reason: 'no update available' };
+    if (force && !state.latest) {
+      // 强制重装当前版本（修复损坏安装等场景）：直接走后台流水线。
+      const current = updater.installedVersion(dshInstallDir(), APP_DIR);
+      applyUpdate(current, { userInitiated: true });
+      return { applied: true, reason: 'reinstalling v' + current };
+    }
+    if (force) {
+      applyUpdate(state.latest, { userInitiated: true });
+      return { applied: true, reason: 'installing v' + state.latest };
+    }
     const confirmed = await promptUpdate({ installed: state.installed, latest: state.latest });
     return { applied: confirmed, reason: confirmed ? 'installing' : 'user cancelled' };
   });

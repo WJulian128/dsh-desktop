@@ -130,7 +130,7 @@ server.registerTool(
       "\n- 已安装版本：" + (result.installed ?? "?") +
       "\n- 最新版本：" + (result.latest ?? "?") +
       "\n- 是否有更新：" + (result.hasUpdate ? "是" : "否") +
-      (result.hasUpdate ? "\n需要时可用 dsh_desktop_apply_update 安装并重启应用。" : ""),
+      (result.hasUpdate ? "\n需要时可用 dsh_desktop_apply_update 后台自动安装（无感，验证失败自动回滚）。" : ""),
     );
   },
 );
@@ -138,14 +138,16 @@ server.registerTool(
 server.registerTool(
   "dsh_desktop_apply_update",
   {
-    title: "安装更新并重启",
+    title: "安装更新（后台自动）",
     description:
-      "安装最新版 @deepseek-ai/dsh 并自动重启桌面应用。会弹出系统确认框，用户确认后执行。",
-    inputSchema: z.object({}),
+      "安装 @deepseek-ai/dsh（默认最新版）。后台自动执行：预检→停服→安装→自动加载→核心验证，失败自动回滚上一版本；过程无弹窗打扰（界面仅显示\"更新中…\"），完成后系统通知结果，无需手动重启。force=true 可重装当前版本（用于修复损坏的安装）。会先弹系统确认框，用户确认后执行。",
+    inputSchema: z.object({
+      force: z.boolean().optional().describe("true=即使无新版本也重装当前版本"),
+    }),
   },
-  async () => {
-    const result = await call("applyUpdate");
-    return text("已提交更新请求" + (result && result.applied ? "（正在安装）" : "（等待用户确认）"));
+  async (args) => {
+    const result = await call("applyUpdate", { force: !!(args && args.force) });
+    return text("已提交更新请求" + (result && result.applied ? "（后台自动流水线执行中…）" : (result && result.reason === 'no update available' ? "（当前已是最新版本；需要重装请传 force:true）" : "（等待用户确认）")));
   },
 );
 
