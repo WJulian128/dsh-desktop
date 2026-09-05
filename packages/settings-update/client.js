@@ -2249,6 +2249,8 @@ window.__ModuleLoader__.load({
           }
         }
         let usageTick = 0;
+        // 会话切换（effect 因 currentSessionId 重建）先清旧活动，避免闪现上一对话内容
+        setAct(null);
         // cheapOnly：只刷 Git/项目地图/编辑占用（推送路径；跳过重的 usage/activity 扫描）
         const refresh = (cheapOnly) => {
           if (!d) return;
@@ -2281,8 +2283,8 @@ window.__ModuleLoader__.load({
           if (cheapOnly) return;
           // usage 扫描较重（子进程化但仍消耗 IO）：每 12 轮（60s）一次，避免频繁唤醒
           if (usageTick % 12 === 0 && d.getUsage) d.getUsage().then((r) => { if (!disposed && r && r.ok) setUsage(r.summary || r); }).catch(() => {});
-          // activity 扫描需解压会话文件：每 4 轮（20s）一次
-          if (usageTick % 4 === 0 && d.activityGet) d.activityGet().then((r) => { if (!disposed && r && r.ok) setAct(r); }).catch(() => {});
+          // activity 扫描需解压会话文件：每 4 轮（20s）一次；按当前查看会话取数（防串台）
+          if (usageTick % 4 === 0 && d.activityGet) d.activityGet({ sessionId: currentSessionId || undefined }).then((r) => { if (!disposed && r && r.ok) setAct(r); }).catch(() => {});
           // GitHub 状态（含一次 /user API 调用）：20s 降频
           if (usageTick % 4 === 0 && d.githubStatus) d.githubStatus().then((r) => { if (!disposed && r && r.ok) setGithub(r); }).catch(() => {});
         };
@@ -2320,7 +2322,10 @@ window.__ModuleLoader__.load({
       const actGroup = { display: 'flex', flexDirection: 'column', gap: '2px' };
       const actGroupBordered = { display: 'flex', flexDirection: 'column', gap: '2px', paddingTop: '2px', borderTop: '1px solid var(--dsw-alias-border-l2)' };
       const actRows = [];
-      if (act && act.ok !== false) {
+      // 活动数据必须属于当前查看的会话（主进程按 sessionId 取数；旧缓存/无参回退时校验）
+      const actMatched = !!act && act.ok !== false
+        && (!currentSessionId || !act.sessionId || act.sessionId === currentSessionId);
+      if (actMatched) {
         const smRows = [];
         for (const s of (act.skills || [])) {
           smRows.push(h('div', { key: 's' + s, style: actRow }, h('span', { style: actIcon }, '\u2699'), h('span', { style: actText }, 'skill · ' + s)));
@@ -2344,6 +2349,12 @@ window.__ModuleLoader__.load({
           outRows.push(h('div', { key: 'to' + p, title: String(p), style: actRow }, h('span', { style: actIcon }, '\u270d'), h('span', { style: actText }, String(p).split(/[\\/]/).pop())));
         }
         if (outRows.length) actRows.push(h('div', { key: 'out', style: actGroupBordered }, h('span', { style: actSub }, '本轮产出'), outRows));
+        if (!actRows.length) {
+          // 该会话确实无活动（历史/空会话）：给明确提示，避免误读为“没有活动=别的会话”
+          actRows.push(h('p', { key: 'aempty', style: { ...st.hint, padding: '2px' } }, '该会话暂无活动记录'));
+        }
+      } else if (act && act.ok === false) {
+        actRows.push(h('p', { key: 'aerr', style: { ...st.hint, padding: '2px' } }, '读取活动失败：' + String(act.error || '未知错误')));
       }
 
       return h('div', { style: panelBody, 'data-dsh-desktop-env-panel': 'true' },
@@ -2356,7 +2367,7 @@ window.__ModuleLoader__.load({
             visionItems.map((it) => h(VisionStreamCard, { key: it.id, item: it })))
           : null,
 
-        h('div', { style: envGroupTitle }, '本会话活动'),
+        h('div', { style: envGroupTitle }, currentSessionId ? '本会话活动' : '最近活动（未取得会话）'),
         act === null
           ? h('p', { key: 'aload', style: { ...st.hint, padding: '2px' } }, '读取中…')
           : h('div', { key: 'a', style: { display: 'flex', flexDirection: 'column', gap: '4px' } }, actRows),
@@ -2365,6 +2376,7 @@ window.__ModuleLoader__.load({
         h('div', { style: { display: 'flex', flexDirection: 'column' } },
           envRow('工作区', (state && state.workspace) || '—', 'ws'),
           envRow('harness', (state && state.installed) ? 'v' + state.installed : '—', 'ver'),
+          envRow('会话', currentSessionId ? String(currentSessionId).slice(0, 12) : '—', 'sid'),
           envRow('端口', (state && state.port) || (state && state.url ? String(state.url).split(':').pop() : '—'), 'port')),
 
         h('div', { style: envGroupTitle }, 'Git'),

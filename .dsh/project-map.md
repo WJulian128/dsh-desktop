@@ -57,7 +57,8 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - ⚠️ **UTF-8 截断**：按字节截断多字节文本时，结尾落在字符**首字节**（0xC0-0xF7）不会触发"去后续字节"循环 → 产生 U+FFFD。逐字符按字节预算拼接最稳（wechat-push.truncateUtf8Bytes 已踩坑修复）
 - QQ 机器人：C2C 被动回复窗口 5 分钟（先占位回复保主动额度，每月仅 4 条/用户）；群 AT 被动窗口仅 5 秒（群回复必然走主动消息）；token 过期 7200s 需缓存刷新；Node ≥22 内置 WebSocket（无需 ws 依赖）
 - ⚠️ **0.1.2-rc.1 web token 认证**：dsh web 子进程打印的完整 URL 带 ?token=，页面与 /api 都要先 GET 它换取 dsh-auth-* cookie（HMAC 签名、有效期 30 天、按 Host 绑定、与 launch token 解耦）。实测 launch token 会**静默轮换且不重打印 URL**（进程未重启也会；两轮重启测量有效窗口≈启动后数十秒，冒烟在 +1.5s 每次成功、外部无 cookie 探测在 +60~90s 已 401），但 cookie 一旦铸好就独立生效——桌面端只在启动早期换一次 cookie（launchHarness + 冒烟），之后 401 强制重换换不到时（token 已轮换）重启桌面端即可恢复
-- ⚠️ **npm file: 依赖形态漂移**：node_modules/@dsh-desktop/settings-update 可能是 junction 也可能是普通拷贝（npm 行为随版本/install-links 变）；一律以 boot-preflight 为准维护 profiles 链接，别假设形态
+- ⚠️ **npm file: 依赖形态漂移（已修复）**：node_modules/@dsh-desktop/settings-update 可能是 junction 也可能是普通拷贝（npm 行为随版本/install-links 变）；boot-preflight.ensurePackageLink 自 2026-09-05 起把“链接是否指向当前最优候选（packages/ 源）”作为可用性判据——指向旧拷贝/悬挂一律重建，保证 packages/ 源码改动即时生效（曾实测 9/5 后 client.js 改动全部失效）
+- ⚠️ **面板活动按会话取数**：EnvPanel「本会话活动」经 dsh:activity-get 携带 sessionId（主进程只扫该会话文件，返回附带 sessionId）；无 sessionId 回退最新活动会话并在标题标注「最近活动」；切会话 effect 先清旧活动防闪现串台。面板「会话」行显示官方注入的 props.sessionId（0.1.2 session 作用域槽位确实注入，实测 session-464a）
 - ⚠️ **沙箱 EPERM 假失败**：在受限沙箱里跑 scripts/test-*.js，凡 spawn 外部进程（zstd/win-control/MCP stdio）的用例报 EPERM——不是代码回归，提权复验
 - ⚠️ **loader entry 失败=致命**：0.1.2-rc.1 起插件树里任何 loader entry 导入失败都会让整个 harness 退出（旧版容忍）；升级后“启动不了”优先查 dsh-web.log 里的 plugin tree/loader entry/ERR_MODULE_NOT_FOUND
 
@@ -76,8 +77,8 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - main/bot-gateway/qq-gateway.js：QQ 官方机器人网关——getAccessToken（7200s 缓存）、getGatewayUrl、WebSocket 状态机（Hello→Identify→READY/心跳/RESUME 重连退避）、事件归一化（C2C/群AT/频道，去 <@!id> 提及）、sendText 三类目标；注入式 httpTransport/wsFactory 可测
 - main/bot-gateway/wechat-push.js：企微 webhook markdown 推送（errcode 45009 限流不重试、其他错误重试一次、truncateUtf8Bytes 4096 字节逐字符截断）
 - main/bot-gateway/reply-bridge.js：ReplyBridge（注入→轮询会话文件→extractReplyAfter 等 step/end 提取回复，串行队列防错位）+ findSessionFile
-- main/mcp-server.mjs：全部 dsh_desktop_* 工具（含 github_*、ui_*、wechat_push、bot_status）
-- main/main.js：startRpc()（ui*/github*/git*/地图/占用/wechatPush/botStatus）；registerDesktopFeatureIpc()（含 bot-config/set/test 系列）；auto-resume 接续；computerScreenshot target:self；**截图链路**：dsh:screenshot（captureFlowToken 防闪回）→ capture-region → screenshot-ready；screenshot-rescue 并行识别 + rescue-progress；**机器人桥接线**：applyBotConfig/readBotConfig、handleQqMessage（占位→注入→分段回推）、pushLatestReplyToWechat（notify onComplete 触发）；**升级防护接线**：applyUpdate（后台流水线：installOnce/bootAndSmoke/自动回滚熔断 + presentUpdateOutcome 结果出口）、checkUpdateGuard（applied 等冒烟）、postBootSmoke/promptRollback/afterBootFailure、startHarness 前 runBootPreflight
+- main/mcp-server.mjs：全部 dsh_desktop_* 工具（github_*、ui_*、wechat_push、bot_status、更新三件套、office/docx/xlsx/word 八件套等；每工具先 call('method') 走 desktop-rpc）
+- main/main.js：startRpc()（ui*/github*/git*/地图/占用/wechatPush/botStatus/office/docx/xlsx/word 分发）；registerDesktopFeatureIpc()（含 bot-config/set/test 系列）；auto-resume 接续；computerScreenshot target:self；**截图链路**：dsh:screenshot（captureFlowToken 防闪回）→ capture-region → screenshot-ready；screenshot-rescue 并行识别 + rescue-progress；**机器人桥接线**：applyBotConfig/readBotConfig、handleQqMessage（占位→注入→分段回推）、pushLatestReplyToWechat（notify onComplete 触发）；**升级防护接线**：applyUpdate（后台流水线：installOnce/bootAndSmoke/自动回滚熔断 + presentUpdateOutcome 结果出口）、checkUpdateGuard（applied 等冒烟）、postBootSmoke/promptRollback/afterBootFailure、startHarness 前 runBootPreflight
 - main/harness.js：HarnessController（行缓冲解析子进程输出、捕获 'dsh web: ' token URL、recentLog 环形缓冲供失败诊断、webUrl 最多等 8s）+ pickFreePort/waitForHttp
 - main/harness-rpc.js：buildRequest/classifyResponse/argsKeyFor/splitMethod（双风格端点信封 + 响应错误分类，纯函数）
 - main/upgrade-guard.js：guardForUpdate/markApplied/shouldSmoke/triageUpgradeBootFailure/classifyBootFailure + KEYS（updateGuard/lastKnownGoodVersion）
@@ -87,6 +88,13 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - scripts/test-harness-rpc.js：RPC 信封/分类单测（14 项）
 - scripts/test-upgrade-guard.js：升级防护判定单测（16 项）
 - scripts/test-boot-preflight.js：链接自愈/依赖补装单测（10 项）
+- main/office-docx.js：Office 文件级通道（纯 Node）：readDocxText（mammoth）、markdownToDocx（docx 包；标题/列表/引用/代码/表格/行内样式解析 parseMarkdown/parseInline 可测）、readXlsx/writeXlsx（exceljs）
+- main/office-com.js：Office 应用通道（COM）：detectOffice（注册表 App Paths + 常见路径 + PS 探测）、verifyWordCom/exportDocxToPdf/openInWord（调 scripts/office-com/word.ps1，stdout 仅 OK/ERR、JSON 落临时文件）；exec/shellResolver 注入可测（setShellResolverForTest）
+- scripts/office-com/word.ps1：Word COM 自动化（detect/export-pdf/open；SaveAs2 PDF=17；纯 ASCII 红线）
+- scripts/test-office-docx.js：docx/xlsx 往返单测（6 项）
+- scripts/test-office-com.js：COM 通道单测（6 项，注入式）
+- scripts/check-harness-contract.js：官方契约体检（升级前后必跑：dsh/bin/插件目标/profiles 链接/本地依赖/i18n 截图文案/web.patch 行/会话帧可解压；退出码 0/2/1）
+- UPGRADE-PLAYBOOK.md：升级处置手册（checklist/故障树/契约清单/官方变更杂记）
 - packages/settings-update/client.js：parseGitSummary（/^#\s/ 小节头）；EnvPanel 五组；SchedPanel；GithubSection；**BotSection（机器人分区）**：QQ 凭据+状态实时+测试+注册指引折叠、企微 webhook+推送策略+测试；**截图补救**：ScreenshotButton + MutationObserver 精确文案 + 800ms shadow 轮询 + onRescueProgress 占位更新
 - renderer/capture.html：截图选区页（冻结背景 + 蓝色选区 + cdebug 全链路日志）
 - renderer/git-diff.html：Git 变更窗（提交/回滚/分支 + 占用警告）

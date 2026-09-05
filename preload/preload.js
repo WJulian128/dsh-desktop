@@ -87,8 +87,9 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   // 小米 MiMo 视觉 API：状态探测（主进程校验 key，不暴露给页面）与打开控制台
   mimoStatus: () => ipcRenderer.invoke('dsh:mimo-status'),
   openMimoConsole: () => ipcRenderer.invoke('dsh:mimo-console'),
-  // 会话活动足迹（工具调用 / 网页来源 / 本地文件来源）
-  activityGet: () => ipcRenderer.invoke('dsh:activity-get'),
+  // 会话活动足迹（工具调用 / 网页来源 / 本地文件来源）。
+  // payload.sessionId：只查指定会话（右侧面板按当前对话展示）；缺省查最新活动会话。
+  activityGet: (payload) => ipcRenderer.invoke('dsh:activity-get', payload),
   // 截图发送被拒（纯文本模型）时的补救：本地识别图片返回描述
   describeImagePath: (path) => ipcRenderer.invoke('dsh:describe-image-path', { path }),
   // 截图补救（主进程执行）：识别全部图片并经官方 RPC 直发进当前会话（免疫页面重载/重渲染）

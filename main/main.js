@@ -4554,19 +4554,32 @@ function currentModelCached() {
 /** 解析最新会话 transcript（在 activity-scan-child.js 子进程里做，绝不阻塞主进程），
  *  提取技能/MCP 调用、当前轮次读的文件/网页来源、本轮产出文件。缓存按文件 mtime 驱动。 */
 let activityCache = { file: '', mtimeMs: 0, value: null, pending: null };
-async function getSessionActivity() {
+/**
+ * 会话活动足迹：默认取 workspace 下最新写入的会话；传 sessionId 时只扫该会话
+ * 文件（右侧面板“本会话活动”按当前查看会话展示，避免切对话后串台）。
+ * 返回附加 sessionId（数据对应的会话）；缓存按文件 mtime 驱动，天然按会话隔离。
+ */
+async function getSessionActivity(sessionId) {
   try {
     const root = path.join(state.dshHome, 'sessions', workspaceSessionKey(state.workspace));
     if (!fs.existsSync(root)) return { ok: false, error: 'no sessions' };
     let best = null;
-    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const file = path.join(root, entry.name, 'session.jsonl.zstd');
+    if (sessionId) {
+      const file = path.join(root, sessionId, 'session.jsonl.zstd');
       let mtimeMs = 0;
-      try { mtimeMs = fs.statSync(file).mtimeMs; } catch { continue; }
-      if (!best || mtimeMs > best.mtimeMs) best = { file, mtimeMs };
+      try { mtimeMs = fs.statSync(file).mtimeMs; } catch { /* 不存在 */ }
+      if (mtimeMs > 0) best = { file, mtimeMs };
+      if (!best) return { ok: false, error: 'no transcript', sessionId };
+    } else {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const file = path.join(root, entry.name, 'session.jsonl.zstd');
+        let mtimeMs = 0;
+        try { mtimeMs = fs.statSync(file).mtimeMs; } catch { continue; }
+        if (!best || mtimeMs > best.mtimeMs) best = { file, mtimeMs };
+      }
+      if (!best) return { ok: false, error: 'no transcript' };
     }
-    if (!best) return { ok: false, error: 'no transcript' };
     // 缓存按 mtime 驱动：会话记录未变时永远复用，变更时子进程重扫（在途共享防并发）。
     if (activityCache.value && activityCache.file === best.file && activityCache.mtimeMs === best.mtimeMs) {
       return activityCache.value;
@@ -4574,6 +4587,7 @@ async function getSessionActivity() {
     if (activityCache.pending && activityCache.file === best.file && activityCache.mtimeMs === best.mtimeMs) {
       return activityCache.pending;
     }
+    const sessionIdOf = path.basename(path.dirname(best.file));
     const pending = new Promise((resolve, reject) => {
       const nodePath = resolveSystemNodeForSubagentScan();
       const child = spawn(nodePath || process.execPath, [path.join(__dirname, 'activity-scan-child.js'), best.file], {
@@ -4591,7 +4605,11 @@ async function getSessionActivity() {
         if (settled) return;
         settled = true;
         if (code !== 0) { fail(new Error('activity scan exited with code ' + code)); return; }
-        try { resolve(JSON.parse(stdout)); } catch (err) { fail(new Error('activity scan returned invalid JSON: ' + err.message)); }
+        try {
+          const doc = JSON.parse(stdout);
+          doc.sessionId = sessionIdOf;
+          resolve(doc);
+        } catch (err) { fail(new Error('activity scan returned invalid JSON: ' + err.message)); }
       });
     });
     activityCache = { file: best.file, mtimeMs: best.mtimeMs, value: null, pending };
@@ -4607,7 +4625,7 @@ async function getSessionActivity() {
     return { ok: false, error: (err && err.message) || String(err) };
   }
 }
-ipcMain.handle('dsh:activity-get', () => getSessionActivity());
+ipcMain.handle('dsh:activity-get', (_event, payload) => getSessionActivity(payload && payload.sessionId ? String(payload.sessionId) : undefined));
 
 /**
  * 截图补救（主进程执行，免疫页面重载/重渲染）：页面检测到图片发送被拒后调用，
