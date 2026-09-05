@@ -96,6 +96,7 @@ DeepSeek Harness 桌面端（Electron 应用）：原生窗口运行 dsh web，�
 - scripts/check-harness-contract.js：官方契约体检（升级前后必跑：dsh/bin/插件目标/profiles 链接/本地依赖/i18n 截图文案/web.patch 行/会话帧可解压；退出码 0/2/1）
 - UPGRADE-PLAYBOOK.md：升级处置手册（checklist/故障树/契约清单/官方变更杂记）
 - packages/settings-update/client.js：parseGitSummary（/^#\s/ 小节头）；EnvPanel 五组；SchedPanel；GithubSection；**BotSection（机器人分区）**：QQ 凭据+状态实时+测试+注册指引折叠、企微 webhook+推送策略+测试；**截图补救**：ScreenshotButton + MutationObserver 精确文案 + 800ms shadow 轮询 + onRescueProgress 占位更新
+- packages/llm-openai-compat/scripts/smoke.mjs：厂商 adapter 冒烟（provider 列表/余额/直连格式探测；0.1.2 适配时同步更新）
 - renderer/capture.html：截图选区页（冻结背景 + 蓝色选区 + cdebug 全链路日志）
 - renderer/git-diff.html：Git 变更窗（提交/回滚/分支 + 占用警告）
 - scripts/test-notify.js：notify 判定单测（22 项，含工具前段落拒绝判定）
