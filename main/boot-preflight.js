@@ -101,10 +101,14 @@ function ensurePackageLink({ dshHome, appDir, pkg, log = () => {} }) {
       let usable = false;
       try {
         const real = fs.realpathSync(link);
-        usable = targetComplete(real, pkg.requiredFiles);
+        // 链接必须指向“当前最优候选”的真实目录才算可用（2026-09 实测：npm 重装可能把
+        // node_modules 里的 file: 依赖从 junction 变成普通拷贝，链接若仍指向旧拷贝，
+        // packages/ 源码的后续改动全部不生效）。指向旧候选/悬挂一律重建。
+        const sameDir = path.resolve(real).toLowerCase() === path.resolve(target.realDir).toLowerCase();
+        usable = sameDir && targetComplete(real, pkg.requiredFiles);
       } catch { /* 悬挂链接 */ }
       if (usable) return true;
-      log('[web-patch] 修复不可用的客户端插件链接：' + link);
+      log('[web-patch] 修复客户端插件链接（悬挂/指向旧候选）：' + link + ' -> ' + target.realDir);
       try { fs.unlinkSync(link); } catch { /* 忽略 */ }
     }
     // junction → 真实目录（链式 junction 在 Node ESM 解析下不可靠，绝不再套一层）

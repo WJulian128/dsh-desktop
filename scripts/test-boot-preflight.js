@@ -86,6 +86,28 @@ check('ensureProfilePluginLinks：悬挂链接自动修复', () => {
   }
 });
 
+check('ensurePackageLink：链接指向旧候选（node_modules 拷贝）→ 重建指向 packages 源', () => {
+  const { root, appDir, dshHome } = makeEnv();
+  try {
+    populatePackages(appDir); // packages/settings-update（最优候选）
+    // 制造 node_modules 里的“旧拷贝”候选（完整但优先级更低）
+    makePackage(path.join(appDir, 'node_modules', '@dsh-desktop'), 'settings-update', { files: ['package.json', 'lib/index.js', 'client.js'] });
+    const linkDir = path.join(dshHome, 'profiles', 'node_modules', '@dsh-desktop');
+    fs.mkdirSync(linkDir, { recursive: true });
+    // 手工把链接指向旧拷贝（模拟 npm 重装后的漂移现场）
+    fs.symlinkSync(path.join(appDir, 'node_modules', '@dsh-desktop', 'settings-update'),
+      path.join(linkDir, 'settings-update'), 'junction');
+    const pkg = preflight.DESKTOP_PLUGINS.find((p) => p.name === '@dsh-desktop/settings-update');
+    const ok = preflight.ensurePackageLink({ dshHome, appDir, pkg, log: () => {} });
+    assert.strictEqual(ok, true);
+    const real = path.resolve(fs.realpathSync(path.join(linkDir, 'settings-update'))).toLowerCase();
+    const expected = path.resolve(path.join(appDir, 'packages', 'settings-update')).toLowerCase();
+    assert.strictEqual(real, expected, '链接应重建到 packages 源目录而非 node_modules 拷贝');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 check('ensurePackageLink：目标缺失时跳过且不抛错', () => {
   const { root, appDir, dshHome } = makeEnv();
   try {
